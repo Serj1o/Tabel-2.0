@@ -273,12 +273,14 @@ class WorkTimeBot:
             await message.answer("Это закрытая система учета рабочего времени. Запросите доступ:", 
                                reply_markup=keyboard)
     
-    async def handle_come(self, message: types.Message, state: FSMContext):
+        async def handle_come(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Пришел'"""
         # Если нажата "Отмена" - возвращаем в меню
         if message.text == "Отмена":
             await self.return_to_main_menu(message, state)
             return
+        
+        user_id = message.from_user.id  # ДОБАВЛЕНО
         
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
@@ -318,9 +320,39 @@ class WorkTimeBot:
             await self.return_to_main_menu(message, state)
             return
         
+        user_id = message.from_user.id  # ДОБАВЛЕНО
+        
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
             return
+        
+        today = date.today()
+        async with self.pool.acquire() as conn:
+            log = await conn.fetchrow('''
+                SELECT id, check_in FROM time_logs 
+                WHERE employee_id = (SELECT id FROM employees WHERE telegram_id = $1) AND date = $2
+                AND check_out IS NULL
+                LIMIT 1
+            ''', user_id, today)
+            
+            if not log:
+                await message.answer("Сначала отметьте приход.")
+                return
+        
+        if Config.GEO_REQUIRED:
+            keyboard = ReplyKeyboardMarkup(
+                keyboard=[[
+                    KeyboardButton(text="Отправить геолокацию", request_location=True)
+                ], [
+                    KeyboardButton(text="Отмена")
+                ]],
+                resize_keyboard=True
+            )
+            await message.answer("Отправьте геолокацию для отметки ухода:", reply_markup=keyboard)
+            await state.set_state(Form.waiting_for_location)
+            await state.update_data(action="checkout", log_id=log['id'])
+        else:
+            await self.process_checkout_simple(user_id, log['id'])
 
     async def return_to_main_menu(self, message: types.Message, state: FSMContext):
         """Возврат в главное меню"""
@@ -529,7 +561,7 @@ class WorkTimeBot:
         
         await message.answer("Панель администратора:", reply_markup=keyboard.as_markup())
 
-        async def handle_callback(self, callback: types.CallbackQuery, state: FSMContext):
+            async def handle_callback(self, callback: types.CallbackQuery, state: FSMContext):
         """Обработка callback-запросов"""
         data = callback.data
         
@@ -540,7 +572,7 @@ class WorkTimeBot:
         elif data.startswith("reject_"):
             await self.handle_rejection(callback)
         elif data == "admin_requests":
-            await self.show_pending_requests(callback)  # ИЗМЕНИЛИ НАЗВАНИЕ НА show_pending_requests
+            await self.show_pending_requests(callback)  # Используем существующий метод
         elif data == "admin_timesheet":
             await self.generate_timesheet(callback)
         elif data == "admin_send":
@@ -717,6 +749,10 @@ class WorkTimeBot:
             await state.update_data(action="request_access", user_id=callback.from_user.id)
         
         await callback.answer()
+
+    async def show_requests(self, callback: types.CallbackQuery):
+        """Показать запросы на доступ - синоним для show_pending_requests"""
+            await self.show_pending_requests(callback)
     
     # Методы обработки данных
     async def process_checkin_with_location(self, user_id: int, location, obj, distance: float):
