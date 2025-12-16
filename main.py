@@ -544,7 +544,7 @@ class WorkTimeBot:
         
         await message.answer("Панель администратора:", reply_markup=keyboard.as_markup())
 
-            async def handle_callback(self, callback: types.CallbackQuery, state: FSMContext):
+    async def handle_callback(self, callback: types.CallbackQuery, state: FSMContext):
         """Обработка callback-запросов"""
         data = callback.data
         
