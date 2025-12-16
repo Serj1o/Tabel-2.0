@@ -83,14 +83,15 @@ class WorkTimeBot:
         self.pool = None
         self.register_handlers()
     
-        async def init_db(self):
-         "Инициализация БД"
+       async def init_db(self):
+        """Инициализация БД"""
         try:
-            self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
-            
+            self.pool = await asyncpg.create_pool(DATABASE_URL)
             async with self.pool.acquire() as conn:
-                # Удаляем старую таблицу (если не боитесь потерять данные)
-                await conn.execute('DROP TABLE IF EXISTS time_logs CASCADE')
+                ...
+        except Exception:
+            logger.exception("Ошибка инициализации БД")
+            raise
                 
                 # Таблица сотрудников
                 await conn.execute('''
