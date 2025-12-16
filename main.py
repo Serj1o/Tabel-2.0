@@ -565,7 +565,7 @@ class WorkTimeBot:
         elif data.startswith("reject_"):
             await self.handle_rejection(callback)
         elif data == "admin_requests":
-            await self.show_pending_requests(callback)  # Используем существующий метод
+            await self.show_pending_requests(callback)  # Используем правильное имя метода
         elif data == "admin_timesheet":
             await self.generate_timesheet(callback)
         elif data == "admin_send":
