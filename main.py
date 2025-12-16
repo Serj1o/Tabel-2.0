@@ -254,7 +254,10 @@ class WorkTimeBot:
     
     async def handle_come(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Пришел'"""
-        user_id = message.from_user.id
+        # Если нажата "Отмена" - возвращаем в меню
+        if message.text == "Отмена":
+            await self.return_to_main_menu(message, state)
+            return
         
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
@@ -289,12 +292,24 @@ class WorkTimeBot:
     
     async def handle_leave(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Ушел'"""
-        user_id = message.from_user.id
+        # Если нажата "Отмена" - возвращаем в меню
+        if message.text == "Отмена":
+            await self.return_to_main_menu(message, state)
+            return
         
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
             return
+
+    async def return_to_main_menu(self, message: types.Message, state: FSMContext):
+        """Возврат в главное меню"""
+        user_id = message.from_user.id
+        async with self.pool.acquire() as conn:
+            is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
         
+        keyboard = self.get_main_keyboard(is_admin=is_admin)
+        await message.answer("Операция отменена", reply_markup=keyboard)
+        await state.clear()
         today = date.today()
         async with self.pool.acquire() as conn:
             log = await conn.fetchrow('''
