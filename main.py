@@ -71,6 +71,7 @@ class Form(StatesGroup):
     waiting_for_location = State()
     waiting_for_object = State()
     waiting_for_employee_name = State()
+    waiting_for_position = State()
     waiting_for_object_data = State()
     waiting_for_sick_reason = State()
 
@@ -83,26 +84,34 @@ class WorkTimeBot:
         self.pool = None
         self.register_handlers()
     
-    async def init_db(self):
+        async def init_db(self):
         """Инициализация БД"""
         try:
             self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
             
             async with self.pool.acquire() as conn:
-                # Все таблицы с нуля
+                # Удаляем все таблицы и создаем заново
+                await conn.execute('DROP TABLE IF EXISTS time_logs CASCADE')
+                await conn.execute('DROP TABLE IF EXISTS access_requests CASCADE')
+                await conn.execute('DROP TABLE IF EXISTS employees CASCADE')
+                await conn.execute('DROP TABLE IF EXISTS objects CASCADE')
+                
+                # Таблица сотрудников - ДОБАВЛЕНА КОЛОНКА position
                 await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS employees (
+                    CREATE TABLE employees (
                         id SERIAL PRIMARY KEY,
                         telegram_id BIGINT UNIQUE,
                         full_name VARCHAR(255) NOT NULL,
+                        position VARCHAR(100),  -- НОВАЯ КОЛОНКА
                         is_admin BOOLEAN DEFAULT FALSE,
                         is_active BOOLEAN DEFAULT TRUE,
                         is_approved BOOLEAN DEFAULT FALSE
                     )
                 ''')
                 
+                # Таблица объектов
                 await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS objects (
+                    CREATE TABLE objects (
                         id SERIAL PRIMARY KEY,
                         name VARCHAR(255) NOT NULL,
                         address TEXT,
@@ -112,8 +121,9 @@ class WorkTimeBot:
                     )
                 ''')
                 
+                # Таблица рабочих отметок
                 await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS time_logs (
+                    CREATE TABLE time_logs (
                         id SERIAL PRIMARY KEY,
                         employee_id INTEGER REFERENCES employees(id),
                         object_id INTEGER REFERENCES objects(id),
@@ -130,31 +140,42 @@ class WorkTimeBot:
                     )
                 ''')
                 
+                # Таблица запросов на доступ
                 await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS access_requests (
+                    CREATE TABLE access_requests (
                         id SERIAL PRIMARY KEY,
                         telegram_id BIGINT NOT NULL,
                         full_name VARCHAR(255),
+                        position VARCHAR(100),  -- НОВАЯ КОЛОНКА
                         status VARCHAR(20) DEFAULT 'pending'
                     )
                 ''')
                 
-                # Проверяем и создаем админа
-                admin_exists = await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM employees WHERE telegram_id = $1)",
-                    Config.ADMIN_IDS[0]
-                )
+                # Добавляем администратора БЕЗ ДОЛЖНОСТИ (чтобы не попадал в табель)
+                await conn.execute('''
+                    INSERT INTO employees (telegram_id, full_name, is_admin, is_approved)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (telegram_id) DO UPDATE SET
+                    is_admin = EXCLUDED.is_admin,
+                    is_approved = EXCLUDED.is_approved
+                ''', Config.ADMIN_IDS[0], "Главный Администратор", True, True)
                 
-                if not admin_exists:
+                
+                for name, address, lat, lon, radius in objects_data:
                     await conn.execute('''
-                        INSERT INTO employees (telegram_id, full_name, is_admin, is_approved)
-                        VALUES ($1, $2, $3, $4)
-                    ''', Config.ADMIN_IDS[0], "Администратор", True, True)
+                        INSERT INTO objects (name, address, latitude, longitude, radius)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (name) DO UPDATE SET
+                        address = EXCLUDED.address,
+                        latitude = EXCLUDED.latitude,
+                        longitude = EXCLUDED.longitude,
+                        radius = EXCLUDED.radius
+                    ''', name, address, lat, lon, radius)
                 
-                logger.info("База данных готова")
+                logger.info("База данных инициализирована")
                 
         except Exception as e:
-            logger.error(f"Ошибка БД: {e}")
+            logger.error(f"Ошибка при инициализации БД: {e}")
             raise                
          
      
@@ -816,13 +837,13 @@ class WorkTimeBot:
         )
     
     # Исправляем метод одобрения запроса
-    async def handle_approval(self, callback: types.CallbackQuery):
+        async def handle_approval(self, callback: types.CallbackQuery):
         """Одобрить запрос"""
         req_id = int(callback.data.split("_")[1])
         
         async with self.pool.acquire() as conn:
             req = await conn.fetchrow('''
-                SELECT telegram_id, full_name FROM access_requests WHERE id = $1
+                SELECT telegram_id, full_name, position FROM access_requests WHERE id = $1
             ''', req_id)
             
             if not req:
@@ -834,19 +855,21 @@ class WorkTimeBot:
                 UPDATE access_requests SET status = 'approved' WHERE id = $1
             ''', req_id)
             
-            # Добавляем или обновляем сотрудника
+            # Добавляем сотрудника с должностью
             await conn.execute('''
-                INSERT INTO employees (telegram_id, full_name, is_approved)
-                VALUES ($1, $2, TRUE)
+                INSERT INTO employees (telegram_id, full_name, position, is_approved)
+                VALUES ($1, $2, $3, TRUE)
                 ON CONFLICT (telegram_id) 
-                DO UPDATE SET is_approved = TRUE, full_name = EXCLUDED.full_name
-            ''', req['telegram_id'], req['full_name'])
+                DO UPDATE SET 
+                    is_approved = TRUE, 
+                    full_name = EXCLUDED.full_name,
+                    position = EXCLUDED.position
+            ''', req['telegram_id'], req['full_name'], req['position'])
             
-            # Получаем статус администратора
             is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', 
                                           callback.from_user.id)
         
-        await callback.message.edit_text(f"Запрос одобрен\nФИО: {req['full_name']}")
+        await callback.message.edit_text(f"Запрос одобрен\nФИО: {req['full_name']}\nДолжность: {req['position']}")
         
         try:
             keyboard = self.get_main_keyboard()
@@ -856,9 +879,63 @@ class WorkTimeBot:
                 reply_markup=keyboard
             )
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {e}")
-            pass
+            logger.error(f"Ошибка отправки сообщения: {e}")            pass
+            async def handle_request_access(self, message: types.Message, state: FSMContext):
+        """Запрос доступа"""
+        user_id = message.from_user.id
+        
+        async with self.pool.acquire() as conn:
+            existing = await conn.fetchval('''
+                SELECT status FROM access_requests WHERE telegram_id = $1 ORDER BY id DESC LIMIT 1
+            ''', user_id)
+            
+            if existing == 'pending':
+                await message.answer("Ваш запрос уже на рассмотрении.")
+                return
+        
+        await message.answer("Введите ваше ФИО и должность в формате:\nФИО | Должность\n\nПример:\nИванов Иван Иванович | Менеджер")
+        await state.set_state(Form.waiting_for_employee_name)
+        await state.update_data(action="request_access", user_id=user_id)
     
+    async def process_text(self, message: types.Message, state: FSMContext):
+        """Обработка текстовых сообщений"""
+        data = await state.get_data()
+        action = data.get("action")
+        
+        if action == "request_access":
+            text = message.text.strip()
+            user_id = data.get("user_id")
+            
+            # Парсим ФИО и должность
+            if "|" in text:
+                parts = [part.strip() for part in text.split("|")]
+                full_name = parts[0]
+                position = parts[1] if len(parts) > 1 else ""
+            else:
+                full_name = text
+                position = ""
+            
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    INSERT INTO access_requests (telegram_id, full_name, position) 
+                    VALUES ($1, $2, $3)
+                ''', user_id, full_name, position)
+                
+                # Уведомляем администраторов
+                admins = await conn.fetch('SELECT telegram_id FROM employees WHERE is_admin = TRUE')
+                for admin in admins:
+                    try:
+                        await self.bot.send_message(
+                            admin['telegram_id'],
+                            f"Новый запрос на доступ:\nФИО: {full_name}\nДолжность: {position}\nID: {user_id}"
+                        )
+                    except:
+                        pass
+            
+            await message.answer("Запрос отправлен. Ожидайте подтверждения.", 
+                               reply_markup=self.get_main_keyboard())
+            await state.clear()
+            
     # Исправляем метод отклонения запроса
     async def handle_rejection(self, callback: types.CallbackQuery):
         """Отклонить запрос"""
@@ -894,27 +971,32 @@ class WorkTimeBot:
             logger.error(f"Ошибка: {e}")
             await callback.message.answer(f"Ошибка: {str(e)}")
     
-    async def create_excel_report(self):
+        async def create_excel_report(self):
         """Создание Excel отчета"""
         today = date.today()
         year, month = today.year, today.month
         
-        # Получаем данные
+        # Получаем данные - ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ (is_admin = FALSE)
         async with self.pool.acquire() as conn:
             employees = await conn.fetch('''
-                SELECT id, full_name FROM employees 
-                WHERE is_approved = TRUE AND is_active = TRUE 
+                SELECT id, full_name, position FROM employees 
+                WHERE is_approved = TRUE 
+                AND is_active = TRUE 
+                AND is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
                 ORDER BY full_name
             ''')
             
             logs = await conn.fetch('''
                 SELECT tl.employee_id, tl.date, tl.check_in, tl.check_out,
                        tl.hours_worked, tl.status, tl.check_in_lat, tl.check_in_lon,
-                       o.name as object_name, e.full_name
+                       tl.check_out_lat, tl.check_out_lon,
+                       o.name as object_name, e.full_name, e.position
                 FROM time_logs tl
                 JOIN employees e ON tl.employee_id = e.id
                 LEFT JOIN objects o ON tl.object_id = o.id
-                WHERE EXTRACT(YEAR FROM tl.date) = $1 AND EXTRACT(MONTH FROM tl.date) = $2
+                WHERE EXTRACT(YEAR FROM tl.date) = $1 
+                AND EXTRACT(MONTH FROM tl.date) = $2
+                AND e.is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
                 ORDER BY e.full_name, tl.date
             ''', year, month)
         
@@ -924,14 +1006,14 @@ class WorkTimeBot:
         # Создаем Excel
         wb = Workbook()
         
-        # Лист 1: Табель
+        # Лист 1: Табель - ДОБАВЛЕНА КОЛОНКА "Должность"
         ws1 = wb.active
         ws1.title = "Табель"
-        ws1.append(["ФИО"] + [str(d) for d in range(1, 32)] + ["Итого часов", "Дней"])
+        ws1.append(["ФИО", "Должность"] + [str(d) for d in range(1, 32)] + ["Итого часов", "Дней"])
         
         # Заполняем данные
         for emp in employees:
-            row = [emp['full_name']] + [""] * 31 + [0, 0]
+            row = [emp['full_name'], emp['position'] or ""] + [""] * 31 + [0, 0]
             total_hours = 0
             days = 0
             
@@ -939,33 +1021,40 @@ class WorkTimeBot:
                 if log['employee_id'] == emp['id']:
                     day = log['date'].day
                     if log['status'] == 'sick':
-                        row[day] = 'Б'
+                        row[day + 2] = 'Б'  # +2 потому что первые 2 колонки - ФИО и Должность
                     elif log['hours_worked']:
-                        row[day] = f"{log['hours_worked']:.1f}"
+                        row[day + 2] = f"{log['hours_worked']:.1f}"
                         total_hours += log['hours_worked']
                         days += 1
             
-            row[32] = total_hours
-            row[33] = days
+            row[34] = total_hours  # 32 дня + 2 колонки = 34
+            row[35] = days
             ws1.append(row)
         
-        # Лист 2: TimeLog
+        # Лист 2: TimeLog - ДОБАВЛЕНА КОЛОНКА "Должность"
         ws2 = wb.create_sheet("TimeLog")
-        ws2.append(["ФИО", "Дата", "Приход", "Уход", "Часы", "Объект", "Координаты"])
+        ws2.append(["ФИО", "Должность", "Дата", "Приход", "Уход", "Часы", "Объект", "Координаты прихода", "Координаты ухода"])
         
         for log in logs:
-            coords = ""
+            coords_in = ""
+            coords_out = ""
+            
             if log['check_in_lat']:
-                coords = f"{log['check_in_lat']:.4f}, {log['check_in_lon']:.4f}"
+                coords_in = f"{log['check_in_lat']:.4f}, {log['check_in_lon']:.4f}"
+            
+            if log['check_out_lat']:
+                coords_out = f"{log['check_out_lat']:.4f}, {log['check_out_lon']:.4f}"
             
             ws2.append([
                 log['full_name'],
+                log['position'] or "",
                 log['date'].strftime('%d.%m.%Y'),
                 log['check_in'].strftime('%H:%M') if log['check_in'] else "",
                 log['check_out'].strftime('%H:%M') if log['check_out'] else "",
                 log['hours_worked'] or 0,
                 log['object_name'] or "",
-                coords
+                coords_in,
+                coords_out
             ])
         
         # Сохраняем
@@ -1013,11 +1102,11 @@ class WorkTimeBot:
             logger.error(f"Ошибка отправки: {e}")
             await callback.message.answer(f"Ошибка отправки: {str(e)}")
     
-    async def show_employees(self, callback: types.CallbackQuery):
+        async def show_employees(self, callback: types.CallbackQuery):
         """Показать список сотрудников"""
         async with self.pool.acquire() as conn:
             employees = await conn.fetch('''
-                SELECT full_name, telegram_id, is_admin, 
+                SELECT full_name, position, telegram_id, is_admin, 
                        (SELECT COUNT(*) FROM time_logs WHERE employee_id = employees.id 
                         AND EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM CURRENT_DATE)) as days_worked
                 FROM employees WHERE is_approved = TRUE ORDER BY full_name
@@ -1026,7 +1115,10 @@ class WorkTimeBot:
         text = "Сотрудники:\n\n"
         for emp in employees:
             role = "Админ" if emp['is_admin'] else "Сотрудник"
-            text += f"{emp['full_name']}\nРоль: {role}, ID: {emp['telegram_id']}, Дней: {emp['days_worked']}\n\n"
+            position = emp['position'] or "Не указана"
+            text += f"{emp['full_name']}\n"
+            text += f"Должность: {position}\n"
+            text += f"Роль: {role}, ID: {emp['telegram_id']}, Дней: {emp['days_worked']}\n\n"
         
         await callback.message.answer(text)
     
