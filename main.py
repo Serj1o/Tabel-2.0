@@ -156,6 +156,8 @@ class WorkTimeBot:
 
                 # Гарантируем наличие критичных столбцов для обратной совместимости
                 await self.ensure_position_columns(conn)
+                await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
+                await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
 
                 # Добавляем администратора БЕЗ ДОЛЖНОСТИ (чтобы не попадал в табель)
                 await conn.execute('''
@@ -187,6 +189,19 @@ class WorkTimeBot:
         """Гарантирует наличие столбца position в ключевых таблицах."""
         await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
         await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
+        """Добавляет столбец, если его нет (для миграций без простоя)"""
+        column_exists = await conn.fetchval(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = $1 AND column_name = $2
+            """,
+            table,
+            column,
+        )
+
+        if not column_exists:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            logger.info("Добавлен столбец %s в таблицу %s", column, table)
      
     def get_main_keyboard(self, is_admin: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
