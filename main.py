@@ -738,7 +738,7 @@ class WorkTimeBot:
 
     async def show_requests(self, callback: types.CallbackQuery):
         """Показать запросы на доступ - синоним для show_pending_requests"""
-            await self.show_pending_requests(callback)
+        await self.show_pending_requests(callback)
     
     # Методы обработки данных
     async def process_checkin_with_location(self, user_id: int, location, obj, distance: float):
