@@ -88,14 +88,7 @@ class WorkTimeBot:
         """Инициализация БД"""
         try:
             self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
-            
-            async with self.pool.acquire() as conn:
-                # Удаляем все таблицы и создаем заново
-                await conn.execute('DROP TABLE IF EXISTS time_logs CASCADE')
-                await conn.execute('DROP TABLE IF EXISTS access_requests CASCADE')
-                await conn.execute('DROP TABLE IF EXISTS employees CASCADE')
-                await conn.execute('DROP TABLE IF EXISTS objects CASCADE')
-                
+                            
                 # Таблица сотрудников - ДОБАВЛЕНА КОЛОНКА position
                 await conn.execute('''
                     CREATE TABLE employees (
@@ -601,6 +594,10 @@ class WorkTimeBot:
         if not requests:
             await callback.message.answer("Нет ожидающих запросов")
             return
+            
+        async def show_requests(self, callback: types.CallbackQuery):
+        """Показать запросы на доступ - синоним для show_pending_requests"""
+        await self.show_pending_requests(callback)
         
         for req in requests:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[
