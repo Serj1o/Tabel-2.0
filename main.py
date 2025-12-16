@@ -87,14 +87,14 @@ def main_kb(is_admin: bool) -> ReplyKeyboardMarkup:
             KeyboardButton(text="⛔ Ушел"),
         ],
         [
-            KeyboardButton(text="🤒 Болел"),
-            KeyboardButton(text="🏗 Объект"),
+            KeyboardButton(text="Болел"),
+            KeyboardButton(text="Объект"),
         ],
     ]
 
     if is_admin:
         keyboard.append(
-            [KeyboardButton(text="📤 Табель")]
+            [KeyboardButton(text="Табель")]
         )
 
     return ReplyKeyboardMarkup(
@@ -200,7 +200,7 @@ async def left(msg: Message):
     await msg.answer(f"⏱ Отработано: {hours} ч.")
 
 
-@dp.message(F.text == "🤒 Болел")
+@dp.message(F.text == "Болел")
 async def sick(msg: Message):
     today = datetime.now(TZ).date()
 
@@ -218,7 +218,7 @@ async def sick(msg: Message):
     await msg.answer("🤒 Отмечено как больничный")
 
 
-@dp.message(F.text == "📤 Табель")
+@dp.message(F.text == "Табель")
 async def report(msg: Message):
     async with pool.acquire() as c:
         user = await c.fetchrow(
@@ -229,7 +229,7 @@ async def report(msg: Message):
         if not user or user["role"] != "admin":
             return
 
-    await msg.answer("📊 Табель будет здесь (следующий шаг)")
+    await msg.answer("Табель будет здесь (следующий шаг)")
 
 
 # ======================
