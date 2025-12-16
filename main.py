@@ -1053,13 +1053,13 @@ class WorkTimeBot:
         year, month = today.year, today.month
         
         # Получаем данные - ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ (is_admin = FALSE)
-    async with self.pool.acquire() as conn:
-        employees = await conn.fetch('''
-            SELECT id, full_name, position FROM employees 
-            WHERE is_approved = TRUE 
-            AND is_active = TRUE 
-            AND is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
-            ORDER BY full_name
+        async with self.pool.acquire() as conn:
+            employees = await conn.fetch('''
+                SELECT id, full_name, position FROM employees 
+                WHERE is_approved = TRUE 
+                AND is_active = TRUE 
+                AND is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
+                ORDER BY full_name
             ''')
             
         logs = await conn.fetch('''
