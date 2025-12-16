@@ -48,6 +48,14 @@ class Config:
 if not Config.BOT_TOKEN or not Config.DATABASE_URL:
     raise ValueError("Проверьте BOT_TOKEN и DATABASE_URL в переменных окружения")
 
+if Config.DATABASE_URL:
+    logger.info(f"Database URL получен, длина: {len(Config.DATABASE_URL)} символов")
+    # Проверяем формат PostgreSQL URL
+    if not Config.DATABASE_URL.startswith(('postgresql://', 'postgres://')):
+        logger.warning("Database URL может иметь неверный формат. Ожидается postgresql:// или postgres://")
+else:
+    logger.error("DATABASE_URL не установлен!")
+    
 # Простая функция расчета расстояния (в километрах)
 def calculate_distance(lat1, lon1, lat2, lon2):
     """Упрощенный расчет расстояния между двумя точками (в метрах)"""
