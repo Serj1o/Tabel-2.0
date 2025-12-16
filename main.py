@@ -1288,27 +1288,9 @@ class WorkTimeBot:
                 )
             except:
                 pass
-    
+                  
     async def auto_checkout(self):
-        """Автоматический уход в 23:00"""
-        today = date.today()
-        
-    async with self.pool.acquire() as conn:
-        logs = await conn.fetch('''
-            SELECT tl.id, e.telegram_id, e.full_name, tl.check_in
-            FROM time_logs tl
-            JOIN employees e ON tl.employee_id = e.id
-            WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
-            ''', today)
-        
-        now = datetime.now()
-        for log in logs:
-            try:
-                hours = (now - log['check_in']).seconds / 3600
-                hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
-                
-    async def auto_checkout(self):
-        """Автоматический уход в 23:00"""
+        """Автоматический уход в 18:00"""
         today = date.today()
         
     async with self.pool.acquire() as conn:
