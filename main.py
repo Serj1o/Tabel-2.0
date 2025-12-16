@@ -84,7 +84,7 @@ class WorkTimeBot:
         self.register_handlers()
     
         async def init_db(self):
-        """Инициализация БД"""
+        
         try:
             self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
             
