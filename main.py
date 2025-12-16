@@ -954,10 +954,11 @@ class WorkTimeBot:
                 reply_markup=keyboard
             )
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {e}")            pass
-            async def handle_request_access(self, message: types.Message, state: FSMContext):
-        """Запрос доступа"""
-        user_id = message.from_user.id
+            logger.error(f"Ошибка отправки сообщения: {e}")            
+            pass
+        async def handle_request_access(self, message: types.Message, state: FSMContext):
+            """Запрос доступа"""
+            user_id = message.from_user.id
         
         async with self.pool.acquire() as conn:
             existing = await conn.fetchval('''
