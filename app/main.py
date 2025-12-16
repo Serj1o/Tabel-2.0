@@ -165,25 +165,33 @@ router = Router()
 @router.message(Command("start"))
 async def start_cmd(msg: Message, state: FSMContext):
     user = ensure_user(msg.from_user.id)
+
+    # 1️⃣ Полный сброс FSM
+    await state.clear()
+
+    # 2️⃣ Сброс ожиданий геолокации
+    user["geo_pending"] = False
+
+    # ❗ если хочешь — можно НЕ сбрасывать смену
+    # user["start"] = None
+
     await save_users()
 
+    # 3️⃣ Если доступ разрешён — сразу главное меню
     if user["approved"]:
-        await msg.answer("✅ Доступ разрешён", reply_markup=main_kb(user))
-    else:
-        await msg.answer("Отправь номер телефона", reply_markup=kb_phone)
-
-@router.message(F.contact)
-async def get_phone(msg: Message, state: FSMContext):
-    if msg.contact.user_id != msg.from_user.id:
-        await msg.answer("❗ Отправь *свой* контакт кнопкой ниже", reply_markup=kb_phone)
+        await msg.answer(
+            "🏠 Главное меню",
+            reply_markup=main_kb(user)
+        )
         return
 
-    user = ensure_user(msg.from_user.id)
-    user["phone"] = msg.contact.phone_number
-    await save_users()
+    # 4️⃣ Если не одобрен — стандартная регистрация
+    await msg.answer(
+        "👋 Добро пожаловать!\n\n"
+        "Для доступа отправь номер телефона",
+        reply_markup=kb_phone
+    )
 
-    await state.set_state(AuthFSM.fio)
-    await msg.answer("Введи ФИО")
 
 @router.message(AuthFSM.fio)
 async def get_fio(msg: Message, state: FSMContext):
