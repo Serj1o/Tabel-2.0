@@ -11,6 +11,7 @@ from typing import Optional, List, Tuple
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+
 logger.error("🚨 BOT REACHED START_POLLING")
 
 import asyncpg
