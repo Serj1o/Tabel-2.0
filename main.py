@@ -255,11 +255,11 @@ class WorkTimeBot:
                                reply_markup=keyboard)
     
         async def handle_come(self, message: types.Message, state: FSMContext):
-        """Обработка кнопки 'Пришел'"""
-        # Если нажата "Отмена" - возвращаем в меню
-        if message.text == "Отмена":
-            await self.return_to_main_menu(message, state)
-            return
+            """Обработка кнопки 'Пришел'"""
+            # Если нажата "Отмена" - возвращаем в меню
+            if message.text == "Отмена":
+                await self.return_to_main_menu(message, state)
+                return
         
         user_id = message.from_user.id  # ДОБАВЛЕНО
         
