@@ -173,19 +173,15 @@ class WorkTimeBot:
             raise
 
     async def ensure_column(self, conn: asyncpg.Connection, table: str, column: str, definition: str):
-        """Добавляет столбец, если его нет (для миграций без простоя)"""
-        column_exists = await conn.fetchval(
-            """
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = $1 AND column_name = $2
-            """,
-            table,
-            column,
-        )
-
-        if not column_exists:
-            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-            logger.info("Добавлен столбец %s в таблицу %s", column, table)
+        """Добавляет столбец, если его нет (используем IF NOT EXISTS для надёжности)."""
+        try:
+            await conn.execute(
+                f"ALTER TABLE IF NOT EXISTS {table} ADD COLUMN IF NOT EXISTS {column} {definition}"
+            )
+            logger.info("Убедились в наличии столбца %s в таблице %s", column, table)
+        except Exception as err:
+            logger.error("Не удалось добавить столбец %s в таблицу %s: %s", column, table, err)
+            raise
 
     async def ensure_position_columns(self, conn: asyncpg.Connection):
         """Гарантирует наличие столбца position в ключевых таблицах."""
