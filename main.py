@@ -528,7 +528,60 @@ class WorkTimeBot:
         keyboard.adjust(2)
         
         await message.answer("Панель администратора:", reply_markup=keyboard.as_markup())
-    
+
+        async def handle_callback(self, callback: types.CallbackQuery, state: FSMContext):
+        """Обработка callback-запросов"""
+        data = callback.data
+        
+        if data.startswith("obj_"):
+            await self.handle_object_selection(callback, state)
+        elif data.startswith("approve_"):
+            await self.handle_approval(callback)
+        elif data.startswith("reject_"):
+            await self.handle_rejection(callback)
+        elif data == "admin_requests":
+            await self.show_pending_requests(callback)  # ИЗМЕНИЛИ НАЗВАНИЕ НА show_pending_requests
+        elif data == "admin_timesheet":
+            await self.generate_timesheet(callback)
+        elif data == "admin_send":
+            await self.send_timesheet_email(callback)
+        elif data == "admin_employees":
+            await self.show_employees(callback)
+        elif data == "admin_objects":
+            await self.show_objects_admin(callback)
+        elif data == "admin_stats":
+            await self.show_stats(callback)
+        elif data == "request_access":
+            await callback.message.answer("Введите ваше ФИО для запроса доступа:")
+            await state.set_state(Form.waiting_for_employee_name)
+            await state.update_data(action="request_access", user_id=callback.from_user.id)
+        
+        await callback.answer()
+
+        async def show_pending_requests(self, callback: types.CallbackQuery):
+        """Показать ожидающие запросы на доступ"""
+        async with self.pool.acquire() as conn:
+            requests = await conn.fetch('''
+                SELECT id, telegram_id, full_name, position FROM access_requests 
+                WHERE status = 'pending' ORDER BY id DESC
+            ''')
+        
+        if not requests:
+            await callback.message.answer("Нет ожидающих запросов")
+            return
+        
+        for req in requests:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="Одобрить", callback_data=f"approve_{req['id']}"),
+                InlineKeyboardButton(text="Отклонить", callback_data=f"reject_{req['id']}")
+            ]])
+            
+            position_text = f"\nДолжность: {req['position']}" if req['position'] else ""
+            await callback.message.answer(
+                f"Запрос #{req['id']}\nФИО: {req['full_name']}{position_text}\nID: {req['telegram_id']}", 
+                reply_markup=keyboard
+            )
+            
     # Обработчики состояний
     async def process_text(self, message: types.Message, state: FSMContext):
         """Обработка текстовых сообщений"""
