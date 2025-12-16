@@ -916,14 +916,14 @@ class WorkTimeBot:
         """Одобрить запрос"""
         req_id = int(callback.data.split("_")[1])
         
-    async with self.pool.acquire() as conn:
-        req = await conn.fetchrow('''
-            SELECT telegram_id, full_name, position FROM access_requests WHERE id = $1
-            ''', req_id)
+        async with self.pool.acquire() as conn:
+            req = await conn.fetchrow('''
+                SELECT telegram_id, full_name, position FROM access_requests WHERE id = $1
+                ''', req_id)
            
-        if not req:
-            await callback.answer("Запрос не найден")
-            return
+            if not req:
+                await callback.answer("Запрос не найден")
+                return
             
             # Обновляем статус запроса
             await conn.execute('''
