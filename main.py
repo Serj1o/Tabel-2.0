@@ -155,9 +155,7 @@ class WorkTimeBot:
                 ''')
 
                 # Гарантируем наличие критичных столбцов для обратной совместимости
-                await self.ensure_position_columns(conn)
-                await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
-                await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
+                await self.safe_migration()
 
                 # Добавляем администратора БЕЗ ДОЛЖНОСТИ (чтобы не попадал в табель)
                 await conn.execute('''
@@ -175,33 +173,49 @@ class WorkTimeBot:
             raise
 
     async def ensure_column(self, conn: asyncpg.Connection, table: str, column: str, definition: str):
-        """Добавляет столбец, если его нет (используем IF NOT EXISTS для надёжности)."""
+        """Добавляет столбец, если его нет (для миграций без простоя)"""
         try:
-            await conn.execute(
-                f"ALTER TABLE IF NOT EXISTS {table} ADD COLUMN IF NOT EXISTS {column} {definition}"
+            column_exists = await conn.fetchval(
+                """
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = $1 AND column_name = $2
+                """,
+                table,
+                column.lower(),
             )
-            logger.info("Убедились в наличии столбца %s в таблице %s", column, table)
+
+            if not column_exists:
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+                logger.info(f"Добавлен столбец {column} в таблицу {table}")
+            else:
+                logger.info(f"Столбец {column} уже существует в таблице {table}")
         except Exception as err:
-            logger.error("Не удалось добавить столбец %s в таблицу %s: %s", column, table, err)
-            raise
+            logger.error(f"Ошибка при проверке/добавлении столбца {column} в таблицу {table}: {err}")
+            try:
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
+                logger.info(f"Добавлен столбец {column} в таблицу {table} (использован IF NOT EXISTS)")
+            except Exception as err2:
+                logger.error(f"Критическая ошибка добавления столбца: {err2}")
+                raise
 
     async def ensure_position_columns(self, conn: asyncpg.Connection):
         """Гарантирует наличие столбца position в ключевых таблицах."""
+        await conn.execute("CREATE TABLE IF NOT EXISTS employees (id SERIAL PRIMARY KEY)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS access_requests (id SERIAL PRIMARY KEY)")
+
         await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
         await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
-        """Добавляет столбец, если его нет (для миграций без простоя)"""
-        column_exists = await conn.fetchval(
-            """
-            SELECT 1 FROM information_schema.columns
-            WHERE table_name = $1 AND column_name = $2
-            """,
-            table,
-            column,
-        )
 
-        if not column_exists:
-            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-            logger.info("Добавлен столбец %s в таблицу %s", column, table)
+    async def safe_migration(self):
+        """Безопасная миграция БД при старте"""
+        try:
+            async with self.pool.acquire() as conn:
+                await self.ensure_position_columns(conn)
+
+            logger.info("Миграция БД завершена успешно")
+        except Exception as e:
+            logger.error(f"Ошибка миграции БД: {e}")
+            raise
      
     def get_main_keyboard(self, is_admin: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
@@ -580,8 +594,7 @@ class WorkTimeBot:
                 return
 
             # Подстраховка: перед любыми админ-действиями проверяем наличие критичных столбцов
-            async with self.pool.acquire() as conn:
-                await self.ensure_position_columns(conn)
+            await self.safe_migration()
 
             try:
                 if data == "admin_requests":
@@ -720,17 +733,18 @@ class WorkTimeBot:
                 return
 
             async with self.pool.acquire() as conn:
-                await self.ensure_position_columns(conn)
-                try:
+                await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
+
+                if position:
                     await conn.execute('''
-                        INSERT INTO access_requests (telegram_id, full_name, position) VALUES ($1, $2, $3)
+                        INSERT INTO access_requests (telegram_id, full_name, position) 
+                        VALUES ($1, $2, $3)
                     ''', user_id, full_name, position)
-                except asyncpg.UndefinedColumnError:
-                    # Подстраховка для старых БД
-                    await self.ensure_position_columns(conn)
+                else:
                     await conn.execute('''
-                        INSERT INTO access_requests (telegram_id, full_name, position) VALUES ($1, $2, $3)
-                    ''', user_id, full_name, position)
+                        INSERT INTO access_requests (telegram_id, full_name, position) 
+                        VALUES ($1, $2, NULL)
+                    ''', user_id, full_name)
                 
                 # Уведомляем администраторов
                 admins = await conn.fetch('SELECT telegram_id FROM employees WHERE is_admin = TRUE')
