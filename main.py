@@ -1299,26 +1299,26 @@ class WorkTimeBot:
             FROM time_logs tl
             JOIN employees e ON tl.employee_id = e.id
             WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
-            ''', today)
+        ''', today)
         
-        now = datetime.now()
-        for log in logs:
-            try:
-                hours = (now - log['check_in']).seconds / 3600
-                hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
+    now = datetime.now()
+    for log in logs:
+        try:
+            hours = (now - log['check_in']).seconds / 3600
+            hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
                 
-    async with self.pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
-            ''', now, hours, log['id'])
-             
-        await self.bot.send_message(
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
+                ''', now, hours, log['id'])
+                
+            await self.bot.send_message(
             log['telegram_id'],
             f"Автоматический уход в {now.strftime('%H:%M')}\nОтработано: {hours} ч.",
             reply_markup=self.get_main_keyboard()
             )
         except Exception as e:
-            logger.error(f"Ошибка автоматического ухода для {log.get('telegram_id', 'N/A')}: {e}")    
+            logger.error(f"Ошибка автоматического ухода для {log.get('telegram_id', 'N/A')}: {e}")  
     # Запуск
     async def run(self):
         """Запуск бота"""
