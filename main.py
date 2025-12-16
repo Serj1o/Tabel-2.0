@@ -1232,11 +1232,11 @@ class WorkTimeBot:
             WHERE e.is_approved = TRUE AND e.is_active = TRUE
             ''', month_start, today)
             
-            today_stats = await conn.fetchrow('''
-                SELECT 
-                    COUNT(DISTINCT employee_id) as worked_today,
-                    SUM(hours_worked) as hours_today
-                FROM time_logs WHERE date = $1
+        today_stats = await conn.fetchrow('''
+            SELECT 
+                COUNT(DISTINCT employee_id) as worked_today,
+                SUM(hours_worked) as hours_today
+            FROM time_logs WHERE date = $1
             ''', today)
         
         text = f"Статистика за {today.strftime('%B %Y')}:\n\n"
@@ -1270,13 +1270,13 @@ class WorkTimeBot:
         """Напоминание об уходе"""
         today = date.today()
         
-        async with self.pool.acquire() as conn:
-            employees = await conn.fetch('''
-                SELECT e.telegram_id, e.full_name
-                FROM time_logs tl
-                JOIN employees e ON tl.employee_id = e.id
-                WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
-                AND e.is_active = TRUE
+    async with self.pool.acquire() as conn:
+        employees = await conn.fetch('''
+            SELECT e.telegram_id, e.full_name
+            FROM time_logs tl
+            JOIN employees e ON tl.employee_id = e.id
+            WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
+            AND e.is_active = TRUE
             ''', today)
         
         for emp in employees:
@@ -1293,12 +1293,12 @@ class WorkTimeBot:
         """Автоматический уход в 23:00"""
         today = date.today()
         
-        async with self.pool.acquire() as conn:
-            logs = await conn.fetch('''
-                SELECT tl.id, e.telegram_id, e.full_name, tl.check_in
-                FROM time_logs tl
-                JOIN employees e ON tl.employee_id = e.id
-                WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
+    async with self.pool.acquire() as conn:
+        logs = await conn.fetch('''
+            SELECT tl.id, e.telegram_id, e.full_name, tl.check_in
+            FROM time_logs tl
+            JOIN employees e ON tl.employee_id = e.id
+            WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
             ''', today)
         
         now = datetime.now()
@@ -1307,9 +1307,9 @@ class WorkTimeBot:
                 hours = (now - log['check_in']).seconds / 3600
                 hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
                 
-                async with self.pool.acquire() as conn:
-                    await conn.execute('''
-                        UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
+            async with self.pool.acquire() as conn:
+                await conn.execute('''
+                    UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
                     ''', now, hours, log['id'])
                 
                 await self.bot.send_message(
