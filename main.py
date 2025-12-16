@@ -97,7 +97,7 @@ class WorkTimeBot:
         """Инициализация БД"""
         try:
             self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
-            
+
             async with self.pool.acquire() as conn:
                 # Таблица сотрудников - ДОБАВЛЕНА КОЛОНКА position
                 await conn.execute('''
@@ -111,7 +111,7 @@ class WorkTimeBot:
                         is_approved BOOLEAN DEFAULT FALSE
                     )
                 ''')
-                
+
                 # Таблица объектов
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS objects (
@@ -123,7 +123,7 @@ class WorkTimeBot:
                         radius INTEGER DEFAULT 500
                     )
                 ''')
-                
+
                 # Таблица рабочих отметок
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS time_logs (
@@ -142,7 +142,7 @@ class WorkTimeBot:
                         notes TEXT
                     )
                 ''')
-                
+
                 # Таблица запросов на доступ
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS access_requests (
@@ -153,7 +153,11 @@ class WorkTimeBot:
                         status VARCHAR(20) DEFAULT 'pending'
                     )
                 ''')
-                
+
+                # Гарантируем наличие критичных столбцов для обратной совместимости
+                await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
+                await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
+
                 # Добавляем администратора БЕЗ ДОЛЖНОСТИ (чтобы не попадал в табель)
                 await conn.execute('''
                     INSERT INTO employees (telegram_id, full_name, is_admin, is_approved)
@@ -162,12 +166,27 @@ class WorkTimeBot:
                     is_admin = EXCLUDED.is_admin,
                     is_approved = EXCLUDED.is_approved
                 ''', Config.ADMIN_IDS[0], "Главный Администратор", True, True)
-                
+
                 logger.info("База данных инициализирована")
-                
+
         except Exception as e:
             logger.error(f"Ошибка при инициализации БД: {e}")
-            raise         
+            raise
+
+    async def ensure_column(self, conn: asyncpg.Connection, table: str, column: str, definition: str):
+        """Добавляет столбец, если его нет (для миграций без простоя)"""
+        column_exists = await conn.fetchval(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = $1 AND column_name = $2
+            """,
+            table,
+            column,
+        )
+
+        if not column_exists:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            logger.info("Добавлен столбец %s в таблицу %s", column, table)
      
     def get_main_keyboard(self, is_admin: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
@@ -1192,9 +1211,12 @@ class WorkTimeBot:
     async def show_employees(self, callback: types.CallbackQuery):
         """Показать список сотрудников"""
         async with self.pool.acquire() as conn:
+            # Гарантируем наличие столбца position даже на старых БД
+            await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
+
             employees = await conn.fetch('''
-                SELECT full_name, position, telegram_id, is_admin, 
-                       (SELECT COUNT(*) FROM time_logs WHERE employee_id = employees.id 
+                SELECT full_name, position, telegram_id, is_admin,
+                       (SELECT COUNT(*) FROM time_logs WHERE employee_id = employees.id
                         AND EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM CURRENT_DATE)) as days_worked
                 FROM employees WHERE is_approved = TRUE ORDER BY full_name
             ''')
