@@ -733,18 +733,32 @@ class WorkTimeBot:
                 return
 
             async with self.pool.acquire() as conn:
-                await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
+                await self.ensure_position_columns(conn)
 
-                if position:
-                    await conn.execute('''
-                        INSERT INTO access_requests (telegram_id, full_name, position) 
-                        VALUES ($1, $2, $3)
-                    ''', user_id, full_name, position)
-                else:
-                    await conn.execute('''
-                        INSERT INTO access_requests (telegram_id, full_name, position) 
-                        VALUES ($1, $2, NULL)
-                    ''', user_id, full_name)
+                try:
+                    if position:
+                        await conn.execute('''
+                            INSERT INTO access_requests (telegram_id, full_name, position)
+                            VALUES ($1, $2, $3)
+                        ''', user_id, full_name, position)
+                    else:
+                        await conn.execute('''
+                            INSERT INTO access_requests (telegram_id, full_name, position)
+                            VALUES ($1, $2, NULL)
+                        ''', user_id, full_name)
+                except asyncpg.UndefinedColumnError:
+                    # Если колонка отсутствует в старой схеме, создаем ее и повторяем вставку
+                    await self.ensure_position_columns(conn)
+                    if position:
+                        await conn.execute('''
+                            INSERT INTO access_requests (telegram_id, full_name, position)
+                            VALUES ($1, $2, $3)
+                        ''', user_id, full_name, position)
+                    else:
+                        await conn.execute('''
+                            INSERT INTO access_requests (telegram_id, full_name, position)
+                            VALUES ($1, $2, NULL)
+                        ''', user_id, full_name)
                 
                 # Уведомляем администраторов
                 admins = await conn.fetch('SELECT telegram_id FROM employees WHERE is_admin = TRUE')
