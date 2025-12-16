@@ -257,6 +257,7 @@ class WorkTimeBot:
         async def handle_come(self, message: types.Message, state: FSMContext):
             """Обработка кнопки 'Пришел'"""
             # Если нажата "Отмена" - возвращаем в меню
+            
             if message.text == "Отмена":
                 await self.return_to_main_menu(message, state)
                 return
@@ -297,6 +298,7 @@ class WorkTimeBot:
     async def handle_leave(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Ушел'"""
         # Если нажата "Отмена" - возвращаем в меню
+        
         if message.text == "Отмена":
             await self.return_to_main_menu(message, state)
             return
