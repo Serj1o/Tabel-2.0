@@ -573,9 +573,9 @@ class WorkTimeBot:
         
         await callback.answer()
 
-        async def show_pending_requests(self, callback: types.CallbackQuery):
+    async def show_pending_requests(self, callback: types.CallbackQuery):
         """Показать ожидающие запросы на доступ"""
-        async with self.pool.acquire() as conn:
+    async with self.pool.acquire() as conn:
             requests = await conn.fetch('''
                 SELECT id, telegram_id, full_name, position FROM access_requests 
                 WHERE status = 'pending' ORDER BY id DESC
@@ -585,7 +585,7 @@ class WorkTimeBot:
             await callback.message.answer("Нет ожидающих запросов")
             return
             
-        async def show_requests(self, callback: types.CallbackQuery):
+    async def show_requests(self, callback: types.CallbackQuery):
         """Показать запросы на доступ - синоним для show_pending_requests"""
         await self.show_pending_requests(callback)
         
