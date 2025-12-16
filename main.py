@@ -83,57 +83,58 @@ class WorkTimeBot:
         self.pool = None
         self.register_handlers()
     
-    async def init_db(self):
+        async def init_db(self):
         """Инициализация БД"""
-        self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
-        
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS employees (
-                    id SERIAL PRIMARY KEY,
-                    telegram_id BIGINT UNIQUE,
-                    full_name VARCHAR(255) NOT NULL,
-                    is_admin BOOLEAN DEFAULT FALSE,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    is_approved BOOLEAN DEFAULT FALSE
-                )
-            ''')
+        try:
+            self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
             
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS objects (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(255) NOT NULL,
-                    address TEXT,
-                    latitude DECIMAL(10, 8),
-                    longitude DECIMAL(11, 8),
-                    radius INTEGER DEFAULT 500
-                )
-            ''')
-            
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS time_logs (
-                    id SERIAL PRIMARY KEY,
-                    employee_id INTEGER REFERENCES employees(id),
-                    object_id INTEGER REFERENCES objects(id),
-                    date DATE NOT NULL,
-                    check_in TIMESTAMP,
-                    check_out TIMESTAMP,
-                    check_in_lat DECIMAL(10, 8),
-                    check_in_lon DECIMAL(11, 8),
-                    hours_worked DECIMAL(4, 2) DEFAULT 0,
-                    status VARCHAR(20) DEFAULT 'work',
-                    notes TEXT
-                )
-            ''')
-            
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS access_requests (
-                    id SERIAL PRIMARY KEY,
-                    telegram_id BIGINT NOT NULL,
-                    full_name VARCHAR(255),
-                    status VARCHAR(20) DEFAULT 'pending'
-                )
-            ''')
+            async with self.pool.acquire() as conn:
+                # Удаляем старую таблицу (если не боитесь потерять данные)
+                await conn.execute('DROP TABLE IF EXISTS time_logs CASCADE')
+                
+                # Таблица сотрудников
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS employees (
+                        id SERIAL PRIMARY KEY,
+                        telegram_id BIGINT UNIQUE,
+                        full_name VARCHAR(255) NOT NULL,
+                        is_admin BOOLEAN DEFAULT FALSE,
+                        is_active BOOLEAN DEFAULT TRUE,
+                        is_approved BOOLEAN DEFAULT FALSE
+                    )
+                ''')
+                
+                # Таблица объектов
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS objects (
+                        id SERIAL PRIMARY KEY,
+                        name VARCHAR(255) NOT NULL,
+                        address TEXT,
+                        latitude DECIMAL(10, 8),
+                        longitude DECIMAL(11, 8),
+                        radius INTEGER DEFAULT 500
+                    )
+                ''')
+                
+                # Таблица рабочих отметок - ПОЛНАЯ СТРУКТУРА
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS time_logs (
+                        id SERIAL PRIMARY KEY,
+                        employee_id INTEGER REFERENCES employees(id),
+                        object_id INTEGER REFERENCES objects(id),
+                        date DATE NOT NULL,
+                        check_in TIMESTAMP,
+                        check_out TIMESTAMP,
+                        check_in_lat DECIMAL(10, 8),
+                        check_in_lon DECIMAL(11, 8),
+                        check_out_lat DECIMAL(10, 8),
+                        check_out_lon DECIMAL(11, 8),
+                        hours_worked DECIMAL(4, 2) DEFAULT 0,
+                        status VARCHAR(20) DEFAULT 'work',
+                        notes TEXT
+                    )
+                ''')
+                
             
             # Создаем администратора
             admin_exists = await conn.fetchval(
