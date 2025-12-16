@@ -83,17 +83,13 @@ class WorkTimeBot:
         self.pool = None
         self.register_handlers()
     
-       async def init_db(self):
+    async def init_db(self):
         """Инициализация БД"""
         try:
-            self.pool = await asyncpg.create_pool(DATABASE_URL)
+            self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
+            
             async with self.pool.acquire() as conn:
-                ...
-        except Exception:
-            logger.exception("Ошибка инициализации БД")
-            raise
-                
-                # Таблица сотрудников
+                # Все таблицы с нуля
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS employees (
                         id SERIAL PRIMARY KEY,
@@ -105,7 +101,6 @@ class WorkTimeBot:
                     )
                 ''')
                 
-                # Таблица объектов
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS objects (
                         id SERIAL PRIMARY KEY,
@@ -117,7 +112,6 @@ class WorkTimeBot:
                     )
                 ''')
                 
-                # Таблица рабочих отметок - ПОЛНАЯ СТРУКТУРА
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS time_logs (
                         id SERIAL PRIMARY KEY,
@@ -136,34 +130,34 @@ class WorkTimeBot:
                     )
                 ''')
                 
-            
-            # Создаем администратора
-            admin_exists = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM employees WHERE telegram_id = $1)",
-                Config.ADMIN_IDS[0]
-            )
-            
-            if not admin_exists:
                 await conn.execute('''
-                    INSERT INTO employees (telegram_id, full_name, is_admin, is_approved)
-                    VALUES ($1, $2, TRUE, TRUE)
-                ''', Config.ADMIN_IDS[0], "Главный Администратор")
+                    CREATE TABLE IF NOT EXISTS access_requests (
+                        id SERIAL PRIMARY KEY,
+                        telegram_id BIGINT NOT NULL,
+                        full_name VARCHAR(255),
+                        status VARCHAR(20) DEFAULT 'pending'
+                    )
+                ''')
                 
-                # Тестовые объекты
-                test_objects = [
-                    ("Мичуринский проспект", "Мичуринский проспект, 2", 55.71581400, 37.53431600, 1000),
-                    ("Рязанский проспект", "Рязанский проспект, 39к3", 55.72801800, 37.75704500, 1000),
-                    
-                ]
-                for obj in test_objects:
+                # Проверяем и создаем админа
+                admin_exists = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM employees WHERE telegram_id = $1)",
+                    Config.ADMIN_IDS[0]
+                )
+                
+                if not admin_exists:
                     await conn.execute('''
-                        INSERT INTO objects (name, address, latitude, longitude, radius)
-                        VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT DO NOTHING
-                    ''', *obj)
-            
-            logger.info("База данных инициализирована")
-    
+                        INSERT INTO employees (telegram_id, full_name, is_admin, is_approved)
+                        VALUES ($1, $2, $3, $4)
+                    ''', Config.ADMIN_IDS[0], "Администратор", True, True)
+                
+                logger.info("База данных готова")
+                
+        except Exception as e:
+            logger.error(f"Ошибка БД: {e}")
+            raise                
+         
+     
     def get_main_keyboard(self, is_admin: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
         builder = ReplyKeyboardBuilder()
