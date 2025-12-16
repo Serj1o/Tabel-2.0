@@ -701,7 +701,7 @@ class WorkTimeBot:
         
         async with self.pool.acquire() as conn:
             req = await conn.fetchrow('SELECT full_name FROM access_requests WHERE id = $1', req_id)
-            await conn.execute('UPDATE access_requests SET status = 'rejected' WHERE id = $1', req_id)
+            await conn.execute("UPDATE access_requests SET status = 'rejected' WHERE id = $1", req_id)
         
         await callback.message.edit_text(f"❌ Запрос отклонен\n👤 {req['full_name']}")
     
