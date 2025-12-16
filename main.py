@@ -1062,18 +1062,18 @@ class WorkTimeBot:
             ORDER BY full_name
             ''')
             
-            logs = await conn.fetch('''
-                SELECT tl.employee_id, tl.date, tl.check_in, tl.check_out,
-                       tl.hours_worked, tl.status, tl.check_in_lat, tl.check_in_lon,
-                       tl.check_out_lat, tl.check_out_lon,
-                       o.name as object_name, e.full_name, e.position
-                FROM time_logs tl
-                JOIN employees e ON tl.employee_id = e.id
-                LEFT JOIN objects o ON tl.object_id = o.id
-                WHERE EXTRACT(YEAR FROM tl.date) = $1 
-                AND EXTRACT(MONTH FROM tl.date) = $2
-                AND e.is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
-                ORDER BY e.full_name, tl.date
+        logs = await conn.fetch('''
+            SELECT tl.employee_id, tl.date, tl.check_in, tl.check_out,
+                   tl.hours_worked, tl.status, tl.check_in_lat, tl.check_in_lon,
+                   tl.check_out_lat, tl.check_out_lon,
+                   o.name as object_name, e.full_name, e.position
+            FROM time_logs tl
+            JOIN employees e ON tl.employee_id = e.id
+            LEFT JOIN objects o ON tl.object_id = o.id
+            WHERE EXTRACT(YEAR FROM tl.date) = $1 
+            AND EXTRACT(MONTH FROM tl.date) = $2
+            AND e.is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
+            ORDER BY e.full_name, tl.date
             ''', year, month)
         
         if not employees:
@@ -1178,14 +1178,14 @@ class WorkTimeBot:
             logger.error(f"Ошибка отправки: {e}")
             await callback.message.answer(f"Ошибка отправки: {str(e)}")
     
-        async def show_employees(self, callback: types.CallbackQuery):
+    async def show_employees(self, callback: types.CallbackQuery):
         """Показать список сотрудников"""
-        async with self.pool.acquire() as conn:
-            employees = await conn.fetch('''
-                SELECT full_name, position, telegram_id, is_admin, 
-                       (SELECT COUNT(*) FROM time_logs WHERE employee_id = employees.id 
-                        AND EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM CURRENT_DATE)) as days_worked
-                FROM employees WHERE is_approved = TRUE ORDER BY full_name
+    async with self.pool.acquire() as conn:
+        employees = await conn.fetch('''
+            SELECT full_name, position, telegram_id, is_admin, 
+                   (SELECT COUNT(*) FROM time_logs WHERE employee_id = employees.id 
+                    AND EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM CURRENT_DATE)) as days_worked
+            FROM employees WHERE is_approved = TRUE ORDER BY full_name
             ''')
         
         text = "Сотрудники:\n\n"
@@ -1219,17 +1219,17 @@ class WorkTimeBot:
         today = date.today()
         month_start = date(today.year, today.month, 1)
         
-        async with self.pool.acquire() as conn:
-            stats = await conn.fetchrow('''
-                SELECT 
-                    COUNT(DISTINCT e.id) as total_employees,
-                    COUNT(DISTINCT tl.employee_id) as worked_this_month,
-                    SUM(tl.hours_worked) as total_hours,
-                    AVG(tl.hours_worked) as avg_hours
-                FROM employees e
-                LEFT JOIN time_logs tl ON e.id = tl.employee_id 
-                    AND tl.date >= $1 AND tl.date <= $2
-                WHERE e.is_approved = TRUE AND e.is_active = TRUE
+    async with self.pool.acquire() as conn:
+        stats = await conn.fetchrow('''
+            SELECT 
+                COUNT(DISTINCT e.id) as total_employees,
+                COUNT(DISTINCT tl.employee_id) as worked_this_month,
+                SUM(tl.hours_worked) as total_hours,
+                AVG(tl.hours_worked) as avg_hours
+            FROM employees e
+            LEFT JOIN time_logs tl ON e.id = tl.employee_id 
+                AND tl.date >= $1 AND tl.date <= $2
+            WHERE e.is_approved = TRUE AND e.is_active = TRUE
             ''', month_start, today)
             
             today_stats = await conn.fetchrow('''
