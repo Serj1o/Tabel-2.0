@@ -84,14 +84,15 @@ class WorkTimeBot:
         self.pool = None
         self.register_handlers()
     
-        async def init_db(self):
+    async def init_db(self):
         """Инициализация БД"""
         try:
             self.pool = await asyncpg.create_pool(Config.DATABASE_URL)
-                            
+            
+            async with self.pool.acquire() as conn:
                 # Таблица сотрудников - ДОБАВЛЕНА КОЛОНКА position
                 await conn.execute('''
-                    CREATE TABLE employees (
+                    CREATE TABLE IF NOT EXISTS employees (
                         id SERIAL PRIMARY KEY,
                         telegram_id BIGINT UNIQUE,
                         full_name VARCHAR(255) NOT NULL,
@@ -104,7 +105,7 @@ class WorkTimeBot:
                 
                 # Таблица объектов
                 await conn.execute('''
-                    CREATE TABLE objects (
+                    CREATE TABLE IF NOT EXISTS objects (
                         id SERIAL PRIMARY KEY,
                         name VARCHAR(255) NOT NULL,
                         address TEXT,
@@ -116,7 +117,7 @@ class WorkTimeBot:
                 
                 # Таблица рабочих отметок
                 await conn.execute('''
-                    CREATE TABLE time_logs (
+                    CREATE TABLE IF NOT EXISTS time_logs (
                         id SERIAL PRIMARY KEY,
                         employee_id INTEGER REFERENCES employees(id),
                         object_id INTEGER REFERENCES objects(id),
@@ -135,7 +136,7 @@ class WorkTimeBot:
                 
                 # Таблица запросов на доступ
                 await conn.execute('''
-                    CREATE TABLE access_requests (
+                    CREATE TABLE IF NOT EXISTS access_requests (
                         id SERIAL PRIMARY KEY,
                         telegram_id BIGINT NOT NULL,
                         full_name VARCHAR(255),
@@ -153,24 +154,11 @@ class WorkTimeBot:
                     is_approved = EXCLUDED.is_approved
                 ''', Config.ADMIN_IDS[0], "Главный Администратор", True, True)
                 
-                
-                for name, address, lat, lon, radius in objects_data:
-                    await conn.execute('''
-                        INSERT INTO objects (name, address, latitude, longitude, radius)
-                        VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (name) DO UPDATE SET
-                        address = EXCLUDED.address,
-                        latitude = EXCLUDED.latitude,
-                        longitude = EXCLUDED.longitude,
-                        radius = EXCLUDED.radius
-                    ''', name, address, lat, lon, radius)
-                
                 logger.info("База данных инициализирована")
                 
         except Exception as e:
             logger.error(f"Ошибка при инициализации БД: {e}")
-            raise                
-         
+            raise         
      
     def get_main_keyboard(self, is_admin: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
