@@ -12,8 +12,6 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-logger.error("🚨 BOT REACHED START_POLLING")
-
 import asyncpg
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
@@ -936,11 +934,6 @@ async def main():
 
     scheduler.start()
     await dp.start_polling(bot)
-
-@router.message()
-async def debug_all(msg: Message):
-    logger.error(f"DEBUG MESSAGE: {msg.text}")
-    await msg.answer("DEBUG: я тебя вижу")
 
 if __name__ == "__main__":
     asyncio.run(main())
