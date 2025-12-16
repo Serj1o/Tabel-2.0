@@ -254,29 +254,25 @@ async def arrived(msg: Message):
 async def got_geo(msg: Message):
     user = ensure_user(msg.from_user.id)
 
-    if not user["geo_pending"]:
+    # Лог для отладки
+    logger.info(
+        "GEO from %s | lat=%s lon=%s live=%s pending=%s",
+        msg.from_user.id,
+        msg.location.latitude,
+        msg.location.longitude,
+        msg.location.live_period,
+        user.get("geo_pending"),
+    )
+
+    if not user.get("geo_pending"):
         await msg.answer("Геолокация получена, но сейчас она не требуется.")
         return
 
     user["geo_pending"] = False
     await save_users()
-    await msg.answer("✅ Смена началась", reply_markup=main_kb(user))
 
-@router.message(F.text == "Ушел")
-async def left(msg: Message):
-    user = ensure_user(msg.from_user.id)
-    if not user["start"]:
-        await msg.answer("Ты не на смене")
-        return
+    await msg.answer("✅ Геолокация принята. Смена началась", reply_markup=main_kb(user))
 
-    start = datetime.fromisoformat(user["start"])
-    end = now()
-    hours = calc_hours(start, end)
-
-    user["start"] = None
-    await save_users()
-
-    await msg.answer(f"✅ Записано {hours} ч", reply_markup=main_kb(user))
 
 # =========================
 # REPORTS
