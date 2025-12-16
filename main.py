@@ -254,15 +254,14 @@ class WorkTimeBot:
             await message.answer("Это закрытая система учета рабочего времени. Запросите доступ:", 
                                reply_markup=keyboard)
     
-        async def handle_come(self, message: types.Message, state: FSMContext):
-            """Обработка кнопки 'Пришел'"""
-            # Если нажата "Отмена" - возвращаем в меню
-            
-            if message.text == "Отмена":
-                await self.return_to_main_menu(message, state)
-                return
+    async def handle_come(self, message: types.Message, state: FSMContext):
+        """Обработка кнопки 'Пришел'"""
+        # Если нажата "Отмена" - возвращаем в меню
+        if message.text == "Отмена":
+            await self.return_to_main_menu(message, state)
+            return
         
-        user_id = message.from_user.id  # ДОБАВЛЕНО
+        user_id = message.from_user.id
         
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
@@ -298,12 +297,11 @@ class WorkTimeBot:
     async def handle_leave(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Ушел'"""
         # Если нажата "Отмена" - возвращаем в меню
-        
         if message.text == "Отмена":
             await self.return_to_main_menu(message, state)
             return
         
-        user_id = message.from_user.id  # ДОБАВЛЕНО
+        user_id = message.from_user.id
         
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
@@ -346,33 +344,6 @@ class WorkTimeBot:
         keyboard = self.get_main_keyboard(is_admin=is_admin)
         await message.answer("Операция отменена", reply_markup=keyboard)
         await state.clear()
-        today = date.today()
-        async with self.pool.acquire() as conn:
-            log = await conn.fetchrow('''
-                SELECT id, check_in FROM time_logs 
-                WHERE employee_id = (SELECT id FROM employees WHERE telegram_id = $1) AND date = $2
-                AND check_out IS NULL
-                LIMIT 1
-            ''', user_id, today)
-            
-            if not log:
-                await message.answer("Сначала отметьте приход.")
-                return
-        
-        if Config.GEO_REQUIRED:
-            keyboard = ReplyKeyboardMarkup(
-                keyboard=[[
-                    KeyboardButton(text="Отправить геолокацию", request_location=True)
-                ], [
-                    KeyboardButton(text="Отмена")
-                ]],
-                resize_keyboard=True
-            )
-            await message.answer("Отправьте геолокацию для отметки ухода:", reply_markup=keyboard)
-            await state.set_state(Form.waiting_for_location)
-            await state.update_data(action="checkout", log_id=log['id'])
-        else:
-            await self.process_checkout_simple(user_id, log['id'])
     
     async def handle_sick_btn(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Болел'"""
@@ -580,13 +551,10 @@ class WorkTimeBot:
                 SELECT id, telegram_id, full_name, position FROM access_requests 
                 WHERE status = 'pending' ORDER BY id DESC
             ''')
+        
         if not requests:
             await callback.message.answer("Нет ожидающих запросов")
             return
-            
-    async def show_requests(self, callback: types.CallbackQuery):
-        """Показать запросы на доступ - синоним для show_pending_requests"""
-        await self.show_pending_requests(callback)
         
         for req in requests:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[
@@ -599,7 +567,11 @@ class WorkTimeBot:
                 f"Запрос #{req['id']}\nФИО: {req['full_name']}{position_text}\nID: {req['telegram_id']}", 
                 reply_markup=keyboard
             )
-            
+    
+    async def show_requests(self, callback: types.CallbackQuery):
+        """Показать запросы на доступ - синоним для show_pending_requests"""
+        await self.show_pending_requests(callback)
+    
     # Обработчики состояний
     async def process_text(self, message: types.Message, state: FSMContext):
         """Обработка текстовых сообщений"""
@@ -707,39 +679,6 @@ class WorkTimeBot:
         
         await state.clear()
     
-    async def handle_callback(self, callback: types.CallbackQuery, state: FSMContext):
-        """Обработка callback-запросов"""
-        data = callback.data
-        
-        if data.startswith("obj_"):
-            await self.handle_object_selection(callback, state)
-        elif data.startswith("approve_"):
-            await self.handle_approval(callback)
-        elif data.startswith("reject_"):
-            await self.handle_rejection(callback)
-        elif data == "admin_requests":
-            await self.show_requests(callback)
-        elif data == "admin_timesheet":
-            await self.generate_timesheet(callback)
-        elif data == "admin_send":
-            await self.send_timesheet_email(callback)
-        elif data == "admin_employees":
-            await self.show_employees(callback)
-        elif data == "admin_objects":
-            await self.show_objects_admin(callback)
-        elif data == "admin_stats":
-            await self.show_stats(callback)
-        elif data == "request_access":
-            await callback.message.answer("Введите ваше ФИО для запроса доступа:")
-            await state.set_state(Form.waiting_for_employee_name)
-            await state.update_data(action="request_access", user_id=callback.from_user.id)
-        
-        await callback.answer()
-
-    async def show_requests(self, callback: types.CallbackQuery):
-        """Показать запросы на доступ - синоним для show_pending_requests"""
-        await self.show_pending_requests(callback)
-    
     # Методы обработки данных
     async def process_checkin_with_location(self, user_id: int, location, obj, distance: float):
         """Обработка прихода с геолокацией"""
@@ -800,84 +739,6 @@ class WorkTimeBot:
             reply_markup=keyboard
         )
     
-    # Методы обработки данных
-    async def process_checkin_with_location(self, user_id: int, location, obj, distance: float):
-        """Обработка прихода с геолокацией"""
-        now = datetime.now()
-        status = 'work'
-        work_start = datetime.combine(now.date(), time(Config.WORK_START_HOUR, 0))
-        if now > work_start + timedelta(minutes=15):
-            status = 'late'
-        
-        async with self.pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO time_logs (employee_id, object_id, date, check_in, check_in_lat, check_in_lon, status)
-                VALUES (
-                    (SELECT id FROM employees WHERE telegram_id = $1), 
-                    $2, $3, $4, $5, $6, $7
-                )
-            ''', user_id, obj['id'], now.date(), now, location.latitude, location.longitude, status)
-        
-        async with self.pool.acquire() as conn:
-            is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
-        
-        keyboard = self.get_main_keyboard(is_admin=is_admin)
-        
-        message_text = f"Приход отмечен!\nВремя: {now.strftime('%H:%M')}\nОбъект: {obj['name']}\nРасстояние: {distance:.0f} м"
-        if status == 'late':
-            message_text += "\nВы опоздали!"
-        
-        await self.bot.send_message(user_id, message_text, reply_markup=keyboard)
-    
-    async def process_checkout_with_location(self, log_id: int, location, obj, distance: float):
-        """Обработка ухода с геолокацией"""
-        now = datetime.now()
-        
-        async with self.pool.acquire() as conn:
-            # Получаем время прихода
-            check_in = await conn.fetchval('SELECT check_in FROM time_logs WHERE id = $1', log_id)
-            
-            # Получаем user_id из записи
-            result = await conn.fetchrow('''
-                SELECT e.telegram_id, e.is_admin 
-                FROM time_logs tl
-                JOIN employees e ON tl.employee_id = e.id
-                WHERE tl.id = $1
-            ''', log_id)
-            
-            if not result:
-                logger.error(f"Запись не найдена: {log_id}")
-                return
-            
-            user_id = result['telegram_id']
-            is_admin = result['is_admin']
-            
-            # Рассчитываем часы (исправлено)
-            if check_in:
-                hours = (now - check_in).total_seconds() / 3600  # Используем total_seconds()
-            else:
-                hours = 0
-                
-            hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
-            
-            # Обновляем запись (исправленный SQL)
-            await conn.execute('''
-                UPDATE time_logs 
-                SET check_out = $1, 
-                    check_out_lat = $2, 
-                    check_out_lon = $3,
-                    hours_worked = $4, 
-                    object_id = $5 
-                WHERE id = $6
-            ''', now, location.latitude, location.longitude, hours, obj['id'], log_id)
-        
-        keyboard = self.get_main_keyboard(is_admin=is_admin)
-        await self.bot.send_message(
-            user_id,
-            f"Уход отмечен!\nВремя: {now.strftime('%H:%M')}\nОбъект: {obj['name']}\nОтработано: {hours} ч.",
-            reply_markup=keyboard
-        )
-    
     async def process_checkout_simple(self, user_id: int, log_id: int):
         """Уход без геолокации"""
         now = datetime.now()
@@ -919,8 +780,8 @@ class WorkTimeBot:
         async with self.pool.acquire() as conn:
             req = await conn.fetchrow('''
                 SELECT telegram_id, full_name, position FROM access_requests WHERE id = $1
-                ''', req_id)
-           
+            ''', req_id)
+            
             if not req:
                 await callback.answer("Запрос не найден")
                 return
@@ -954,11 +815,11 @@ class WorkTimeBot:
                 reply_markup=keyboard
             )
         except Exception as e:
-            logger.error(f"Ошибка отправки сообщения: {e}")            
-            pass
-        async def handle_request_access(self, message: types.Message, state: FSMContext):
-            """Запрос доступа"""
-            user_id = message.from_user.id
+            logger.error(f"Ошибка отправки сообщения: {e}")
+            
+    async def handle_request_access(self, message: types.Message, state: FSMContext):
+        """Запрос доступа"""
+        user_id = message.from_user.id
         
         async with self.pool.acquire() as conn:
             existing = await conn.fetchval('''
@@ -972,45 +833,6 @@ class WorkTimeBot:
         await message.answer("Введите ваше ФИО и должность в формате:\nФИО | Должность\n\nПример:\nИванов Иван Иванович | Менеджер")
         await state.set_state(Form.waiting_for_employee_name)
         await state.update_data(action="request_access", user_id=user_id)
-    
-    async def process_text(self, message: types.Message, state: FSMContext):
-        """Обработка текстовых сообщений"""
-        data = await state.get_data()
-        action = data.get("action")
-        
-        if action == "request_access":
-            text = message.text.strip()
-            user_id = data.get("user_id")
-            
-            # Парсим ФИО и должность
-            if "|" in text:
-                parts = [part.strip() for part in text.split("|")]
-                full_name = parts[0]
-                position = parts[1] if len(parts) > 1 else ""
-            else:
-                full_name = text
-                position = ""
-            
-            async with self.pool.acquire() as conn:
-                await conn.execute('''
-                    INSERT INTO access_requests (telegram_id, full_name, position) 
-                    VALUES ($1, $2, $3)
-                ''', user_id, full_name, position)
-                
-                # Уведомляем администраторов
-                admins = await conn.fetch('SELECT telegram_id FROM employees WHERE is_admin = TRUE')
-                for admin in admins:
-                    try:
-                        await self.bot.send_message(
-                            admin['telegram_id'],
-                            f"Новый запрос на доступ:\nФИО: {full_name}\nДолжность: {position}\nID: {user_id}"
-                        )
-                    except:
-                        pass
-            
-            await message.answer("Запрос отправлен. Ожидайте подтверждения.", 
-                               reply_markup=self.get_main_keyboard())
-            await state.clear()
             
     # Исправляем метод отклонения запроса
     async def handle_rejection(self, callback: types.CallbackQuery):
@@ -1232,11 +1054,11 @@ class WorkTimeBot:
                 WHERE e.is_approved = TRUE AND e.is_active = TRUE
             ''', month_start, today)
             
-        today_stats = await conn.fetchrow('''
-            SELECT 
-                COUNT(DISTINCT employee_id) as worked_today,
-                SUM(hours_worked) as hours_today
-            FROM time_logs WHERE date = $1
+            today_stats = await conn.fetchrow('''
+                SELECT 
+                    COUNT(DISTINCT employee_id) as worked_today,
+                    SUM(hours_worked) as hours_today
+                FROM time_logs WHERE date = $1
             ''', today)
         
         text = f"Статистика за {today.strftime('%B %Y')}:\n\n"
@@ -1286,11 +1108,11 @@ class WorkTimeBot:
                     "Напоминание! Не забудьте отметить уход.",
                     reply_markup=self.get_main_keyboard()
                 )
-            except:
-                pass
-                  
+            except Exception as e:
+                logger.error(f"Ошибка отправки напоминания: {e}")
+    
     async def auto_checkout(self):
-        """Автоматический уход в 18:00"""
+        """Автоматический уход в 23:00"""
         today = date.today()
         
         async with self.pool.acquire() as conn:
@@ -1301,24 +1123,25 @@ class WorkTimeBot:
                 WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
             ''', today)
         
-    now = datetime.now()
-    for log in logs:
-        try:
-            hours = (now - log['check_in']).seconds / 3600
-            hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
+        now = datetime.now()
+        for log in logs:
+            try:
+                hours = (now - log['check_in']).seconds / 3600
+                hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
                 
-            async with self.pool.acquire() as conn:
-                await conn.execute('''
-                    UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
-                ''', now, hours, log['id'])
+                async with self.pool.acquire() as conn:
+                    await conn.execute('''
+                        UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
+                    ''', now, hours, log['id'])
                 
-            await self.bot.send_message(
-            log['telegram_id'],
-            f"Автоматический уход в {now.strftime('%H:%M')}\nОтработано: {hours} ч.",
-            reply_markup=self.get_main_keyboard()
-            )
-        except Exception as e:
-            logger.error(f"Ошибка автоматического ухода для {log.get('telegram_id', 'N/A')}: {e}")  
+                await self.bot.send_message(
+                    log['telegram_id'],
+                    f"Автоматический уход в {now.strftime('%H:%M')}\nОтработано: {hours} ч.",
+                    reply_markup=self.get_main_keyboard()
+                )
+            except Exception as e:
+                logger.error(f"Ошибка автоматического ухода: {e}")
+    
     # Запуск
     async def run(self):
         """Запуск бота"""
