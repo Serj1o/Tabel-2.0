@@ -4,6 +4,7 @@ import asyncio
 import os
 import logging
 from datetime import datetime, timedelta, date, time
+from calendar import monthrange
 from typing import Dict, Optional
 import math
 import io
@@ -211,9 +212,14 @@ class WorkTimeBot:
         self.dp.message.register(self.process_sick_reason, Form.waiting_for_sick_reason)
         
         # Callback-запросы
-        self.dp.callback_query.register(self.handle_callback, 
-            F.data.startswith("obj_") | F.data.startswith("admin_") | 
-            F.data.startswith("approve_") | F.data.startswith("reject_"))
+        self.dp.callback_query.register(
+            self.handle_callback,
+            F.data.startswith("obj_")
+            | F.data.startswith("admin_")
+            | F.data.startswith("approve_")
+            | F.data.startswith("reject_")
+            | (F.data == "request_access"),
+        )
     
     # Вспомогательные методы
     async def check_access(self, user_id: int, need_admin: bool = False) -> bool:
@@ -341,7 +347,8 @@ class WorkTimeBot:
             await state.set_state(Form.waiting_for_location)
             await state.update_data(action="checkout", log_id=log['id'])
         else:
-            await self.process_checkout_simple(user_id, log['id'])
+            await state.update_data(action="checkout", log_id=log['id'])
+            await self.show_objects(message, state, "checkout")
 
     async def return_to_main_menu(self, message: types.Message, state: FSMContext):
         """Возврат в главное меню"""
@@ -533,20 +540,32 @@ class WorkTimeBot:
             await self.handle_approval(callback)
         elif data.startswith("reject_"):
             await self.handle_rejection(callback)
-        elif data == "admin_requests":
-            await self.show_pending_requests(callback)  # Используем правильное имя метода
-        elif data == "admin_timesheet":
-            await self.generate_timesheet(callback)
-        elif data == "admin_send":
-            await self.send_timesheet_email(callback)
-        elif data == "admin_employees":
-            await self.show_employees(callback)
-        elif data == "admin_objects":
-            await self.show_objects_admin(callback)
-        elif data == "admin_stats":
-            await self.show_stats(callback)
+        elif data.startswith("admin_"):
+            if not await self.check_access(callback.from_user.id, need_admin=True):
+                await callback.answer("Нет прав", show_alert=True)
+                return
+
+            try:
+                if data == "admin_requests":
+                    await self.show_pending_requests(callback)  # Используем правильное имя метода
+                elif data == "admin_timesheet":
+                    await self.generate_timesheet(callback)
+                elif data == "admin_send":
+                    await self.send_timesheet_email(callback)
+                elif data == "admin_employees":
+                    await self.show_employees(callback)
+                elif data == "admin_objects":
+                    await self.show_objects_admin(callback)
+                elif data == "admin_stats":
+                    await self.show_stats(callback)
+                else:
+                    await callback.answer("Неизвестная команда", show_alert=True)
+                    return
+            except Exception as admin_error:
+                logger.error(f"Ошибка обработки admin callback {data}: {admin_error}")
+                await callback.message.answer("Произошла ошибка при обработке запроса администратора. Попробуйте позже.")
         elif data == "request_access":
-            await callback.message.answer("Введите ваше ФИО для запроса доступа:")
+            await callback.message.answer("Введите ваше ФИО и должность (через |):")
             await state.set_state(Form.waiting_for_employee_name)
             await state.update_data(action="request_access", user_id=callback.from_user.id)
         
@@ -579,6 +598,62 @@ class WorkTimeBot:
     async def show_requests(self, callback: types.CallbackQuery):
         """Показать запросы на доступ - синоним для show_pending_requests"""
         await self.show_pending_requests(callback)
+
+    async def show_objects(self, message: types.Message, state: FSMContext, action: str):
+        """Показать список объектов для выбора"""
+        async with self.pool.acquire() as conn:
+            objects = await conn.fetch('SELECT id, name, address FROM objects ORDER BY name')
+        
+        if not objects:
+            await message.answer("Список объектов пуст. Обратитесь к администратору.",
+                               reply_markup=self.get_main_keyboard())
+            await state.clear()
+            return
+        
+        keyboard = InlineKeyboardBuilder()
+        for obj in objects:
+            title = obj['name']
+            if obj['address']:
+                title += f" ({obj['address']})"
+            keyboard.button(text=title, callback_data=f"obj_{obj['id']}_{action}")
+        keyboard.adjust(1)
+
+        await state.update_data(action=action)
+        await message.answer("Выберите объект:", reply_markup=keyboard.as_markup())
+
+    async def handle_object_selection(self, callback: types.CallbackQuery, state: FSMContext):
+        """Обработка выбора объекта"""
+        _, obj_id_str, action = callback.data.split("_", maxsplit=2)
+        obj_id = int(obj_id_str)
+
+        async with self.pool.acquire() as conn:
+            obj = await conn.fetchrow('SELECT id, name, address, latitude, longitude, radius FROM objects WHERE id = $1', obj_id)
+        
+        if not obj:
+            await callback.message.answer("Объект не найден, попробуйте снова.")
+            return
+        
+        data = await state.get_data()
+        lat = data.get("lat")
+        lon = data.get("lon")
+        log_id = data.get("log_id")
+        user_id = callback.from_user.id
+
+        if action == "checkin":
+            await self.process_checkin_manual(user_id, obj, lat, lon)
+            await state.clear()
+        elif action == "checkout":
+            if not log_id:
+                await callback.message.answer("Не удалось найти запись для отметки ухода. Попробуйте еще раз.")
+            else:
+                await self.process_checkout_manual(log_id, obj, user_id, lat, lon)
+            await state.clear()
+        else:
+            await state.update_data(selected_object_id=obj['id'])
+            await callback.message.answer(
+                f"Объект выбран: {obj['name']}\nИспользуйте отметку прихода/ухода для записи времени.",
+                reply_markup=self.get_main_keyboard()
+            )
     
     # Обработчики состояний
     async def process_text(self, message: types.Message, state: FSMContext):
@@ -587,24 +662,32 @@ class WorkTimeBot:
         action = data.get("action")
         
         if action == "request_access":
-            full_name = message.text.strip()
+            raw_text = message.text.strip()
+            parts = [part.strip() for part in raw_text.split("|", maxsplit=1)]
+            full_name = parts[0]
+            position = parts[1] if len(parts) > 1 else None
             user_id = data.get("user_id")
+
+            if not full_name:
+                await message.answer("Пожалуйста, введите ваше ФИО (можно через '|' указать должность).")
+                return
             
             async with self.pool.acquire() as conn:
                 await conn.execute('''
-                    INSERT INTO access_requests (telegram_id, full_name) VALUES ($1, $2)
-                ''', user_id, full_name)
+                    INSERT INTO access_requests (telegram_id, full_name, position) VALUES ($1, $2, $3)
+                ''', user_id, full_name, position)
                 
                 # Уведомляем администраторов
                 admins = await conn.fetch('SELECT telegram_id FROM employees WHERE is_admin = TRUE')
                 for admin in admins:
                     try:
+                        position_line = f"\nДолжность: {position}" if position else ""
                         await self.bot.send_message(
                             admin['telegram_id'],
-                            f"Новый запрос на доступ:\nФИО: {full_name}\nID: {user_id}"
+                            f"Новый запрос на доступ:\nФИО: {full_name}{position_line}\nID: {user_id}"
                         )
-                    except:
-                        pass
+                    except Exception as notify_error:
+                        logger.warning(f"Не удалось уведомить администратора {admin['telegram_id']}: {notify_error}")
             
             await message.answer("Запрос отправлен. Ожидайте подтверждения.", 
                                reply_markup=self.get_main_keyboard())
@@ -657,6 +740,12 @@ class WorkTimeBot:
         data = await state.get_data()
         action = data.get("action")
         location = message.location
+
+        if not action:
+            await message.answer("Не удалось определить действие. Попробуйте снова через меню.",
+                               reply_markup=self.get_main_keyboard())
+            await state.clear()
+            return
         
         # Находим ближайший объект
         async with self.pool.acquire() as conn:
@@ -688,64 +777,109 @@ class WorkTimeBot:
         await state.clear()
     
     # Методы обработки данных
-    async def process_checkin_with_location(self, user_id: int, location, obj, distance: float):
-        """Обработка прихода с геолокацией"""
+    async def process_checkin_manual(
+        self,
+        user_id: int,
+        obj: asyncpg.Record,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+        distance: Optional[float] = None,
+    ):
+        """Обработка прихода с выбранным объектом"""
         now = datetime.now()
         status = 'work'
         work_start = datetime.combine(now.date(), time(Config.WORK_START_HOUR, 0))
         if now > work_start + timedelta(minutes=15):
             status = 'late'
-        
+
         async with self.pool.acquire() as conn:
-            await conn.execute('''
+            await conn.execute(
+                '''
                 INSERT INTO time_logs (employee_id, object_id, date, check_in, check_in_lat, check_in_lon, status)
                 VALUES ((SELECT id FROM employees WHERE telegram_id = $1), $2, $3, $4, $5, $6, $7)
-            ''', user_id, obj['id'], now.date(), now, location.latitude, location.longitude, status)
-        
-        async with self.pool.acquire() as conn:
+                ''',
+                user_id,
+                obj['id'],
+                now.date(),
+                now,
+                lat,
+                lon,
+                status,
+            )
             is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
-        
+
         keyboard = self.get_main_keyboard(is_admin=is_admin)
-        
-        message_text = f"Приход отмечен!\nВремя: {now.strftime('%H:%M')}\nОбъект: {obj['name']}\nРасстояние: {distance:.0f} м"
+
+        message_text = f"Приход отмечен!\nВремя: {now.strftime('%H:%M')}\nОбъект: {obj['name']}"
+        if distance is not None:
+            message_text += f"\nРасстояние: {distance:.0f} м"
         if status == 'late':
             message_text += "\nВы опоздали!"
-        
+
         await self.bot.send_message(user_id, message_text, reply_markup=keyboard)
+
+    async def process_checkin_with_location(self, user_id: int, location, obj, distance: float):
+        """Обработка прихода с геолокацией"""
+        await self.process_checkin_manual(user_id, obj, location.latitude, location.longitude, distance)
     
-    async def process_checkout_with_location(self, log_id: int, location, obj, distance: float):
-        """Обработка ухода с геолокацией"""
+    async def process_checkout_manual(
+        self,
+        log_id: int,
+        obj: asyncpg.Record,
+        user_id: int,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ):
+        """Обработка ухода с выбранным объектом"""
         now = datetime.now()
-        
+
         async with self.pool.acquire() as conn:
-            # Получаем время прихода
             check_in = await conn.fetchval('SELECT check_in FROM time_logs WHERE id = $1', log_id)
-            
-            # Получаем user_id
-            user_id = await conn.fetchval('''
-                SELECT telegram_id FROM employees WHERE id = (
-                    SELECT employee_id FROM time_logs WHERE id = $1
-                )
-            ''', log_id)
-            
-            # Рассчитываем часы
-            hours = (now - check_in).seconds / 3600
+            hours = 0
+            if check_in:
+                hours = (now - check_in).total_seconds() / 3600
             hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
-            
-            # Обновляем запись
-            await conn.execute('''
+
+            await conn.execute(
+                '''
                 UPDATE time_logs SET check_out = $1, check_out_lat = $2, check_out_lon = $3,
                 hours_worked = $4, object_id = $5 WHERE id = $6
-            ''', now, location.latitude, location.longitude, hours, obj['id'], log_id)
-            
+                ''',
+                now,
+                lat,
+                lon,
+                hours,
+                obj['id'],
+                log_id,
+            )
+
             is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
-        
+
         keyboard = self.get_main_keyboard(is_admin=is_admin)
         await self.bot.send_message(
             user_id,
             f"Уход отмечен!\nВремя: {now.strftime('%H:%M')}\nОбъект: {obj['name']}\nОтработано: {hours} ч.",
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
+
+    async def process_checkout_with_location(self, log_id: int, location, obj, distance: float):
+        """Обработка ухода с геолокацией"""
+        if not log_id:
+            logger.warning("Не удалось определить запись времени для отметки ухода")
+            return
+        async with self.pool.acquire() as conn:
+            user_id = await conn.fetchval(
+                '''
+                SELECT telegram_id FROM employees WHERE id = (
+                    SELECT employee_id FROM time_logs WHERE id = $1
+                )
+                ''',
+                log_id,
+            )
+        if not user_id:
+            logger.warning("Не удалось определить пользователя для отметки ухода")
+            return
+        await self.process_checkout_manual(log_id, obj, user_id, location.latitude, location.longitude)
     
     async def process_checkout_simple(self, user_id: int, log_id: int):
         """Уход без геолокации"""
@@ -881,18 +1015,22 @@ class WorkTimeBot:
         """Создание Excel отчета"""
         today = date.today()
         year, month = today.year, today.month
-        
+        days_in_month = monthrange(year, month)[1]
+
         # Получаем данные - ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ (is_admin = FALSE)
         async with self.pool.acquire() as conn:
-            employees = await conn.fetch('''
+            employees = await conn.fetch(
+                '''
                 SELECT id, full_name, position FROM employees 
                 WHERE is_approved = TRUE 
                 AND is_active = TRUE 
                 AND is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
                 ORDER BY full_name
-            ''')
-            
-            logs = await conn.fetch('''
+                '''
+            )
+
+            logs = await conn.fetch(
+                '''
                 SELECT tl.employee_id, tl.date, tl.check_in, tl.check_out,
                        tl.hours_worked, tl.status, tl.check_in_lat, tl.check_in_lon,
                        tl.check_out_lat, tl.check_out_lon,
@@ -904,53 +1042,72 @@ class WorkTimeBot:
                 AND EXTRACT(MONTH FROM tl.date) = $2
                 AND e.is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
                 ORDER BY e.full_name, tl.date
-            ''', year, month)
-        
+                ''',
+                year,
+                month,
+            )
+
         if not employees:
             return None
-        
+
+        logs_by_employee: Dict[int, list] = {}
+        for log in logs:
+            logs_by_employee.setdefault(log['employee_id'], []).append(log)
+
         # Создаем Excel
         wb = Workbook()
-        
+
         # Лист 1: Табель - ДОБАВЛЕНА КОЛОНКА "Должность"
         ws1 = wb.active
         ws1.title = "Табель"
-        ws1.append(["ФИО", "Должность"] + [str(d) for d in range(1, 32)] + ["Итого часов", "Дней"])
-        
+        ws1.append(["ФИО", "Должность"] + [str(d) for d in range(1, days_in_month + 1)] + ["Итого часов", "Дней"])
+
         # Заполняем данные
         for emp in employees:
-            row = [emp['full_name'], emp['position'] or ""] + [""] * 31 + [0, 0]
+            row_length = 2 + days_in_month + 2
+            row = [emp['full_name'], emp['position'] or ""] + [""] * (row_length - 2)
             total_hours = 0
             days = 0
-            
-            for log in logs:
-                if log['employee_id'] == emp['id']:
-                    day = log['date'].day
-                    if log['status'] == 'sick':
-                        row[day + 2] = 'Б'  # +2 потому что первые 2 колонки - ФИО и Должность
-                    elif log['hours_worked']:
-                        row[day + 2] = f"{log['hours_worked']:.1f}"
-                        total_hours += log['hours_worked']
-                        days += 1
-            
-            row[34] = total_hours  # 32 дня + 2 колонки = 34
-            row[35] = days
+
+            for log in logs_by_employee.get(emp['id'], []):
+                day = log['date'].day
+                index = 1 + day  # смещение на ФИО и Должность
+                if log['status'] == 'sick':
+                    row[index] = 'Б'
+                else:
+                    worked_hours = float(log['hours_worked'] or 0)
+                    row[index] = f"{worked_hours:.1f}"
+                    total_hours += worked_hours
+                    days += 1
+
+            row[-2] = total_hours
+            row[-1] = days
             ws1.append(row)
-        
+
         # Лист 2: TimeLog - ДОБАВЛЕНА КОЛОНКА "Должность"
         ws2 = wb.create_sheet("TimeLog")
-        ws2.append(["ФИО", "Должность", "Дата", "Приход", "Уход", "Часы", "Объект", "Координаты прихода", "Координаты ухода"])
-        
+        ws2.append([
+            "ФИО",
+            "Должность",
+            "Дата",
+            "Приход",
+            "Уход",
+            "Часы",
+            "Объект",
+            "Координаты прихода",
+            "Координаты ухода",
+        ])
+
         for log in logs:
             coords_in = ""
             coords_out = ""
-            
+
             if log['check_in_lat']:
                 coords_in = f"{log['check_in_lat']:.4f}, {log['check_in_lon']:.4f}"
-            
+
             if log['check_out_lat']:
                 coords_out = f"{log['check_out_lat']:.4f}, {log['check_out_lon']:.4f}"
-            
+
             ws2.append([
                 log['full_name'],
                 log['position'] or "",
@@ -960,9 +1117,9 @@ class WorkTimeBot:
                 log['hours_worked'] or 0,
                 log['object_name'] or "",
                 coords_in,
-                coords_out
+                coords_out,
             ])
-        
+
         # Сохраняем
         excel_file = io.BytesIO()
         wb.save(excel_file)
@@ -976,37 +1133,61 @@ class WorkTimeBot:
             return
         
         await callback.message.answer("Отправляю табель...")
-        
+
         try:
-            excel_file = await self.create_excel_report()
-            if not excel_file:
-                await callback.message.answer("Ошибка формирования табеля")
-                return
-            
-            # Отправка email
-            msg = MIMEMultipart()
-            msg['From'] = Config.SMTP_USERNAME
-            msg['To'] = ', '.join(Config.EMAIL_RECIPIENTS)
-            msg['Subject'] = f"Табель {datetime.now().strftime('%B %Y')}"
-            
-            msg.attach(MIMEText("Табель учета рабочего времени во вложении", 'plain'))
-            
-            attachment = MIMEBase('application', 'octet-stream')
-            attachment.set_payload(excel_file.getvalue())
-            encoders.encode_base64(attachment)
-            attachment.add_header('Content-Disposition', 
-                                f'attachment; filename="Табель_{datetime.now().strftime("%Y_%m")}.xlsx"')
-            msg.attach(attachment)
-            
-            with smtplib.SMTP(Config.SMTP_SERVER, Config.SMTP_PORT) as server:
-                server.starttls()
-                server.login(Config.SMTP_USERNAME, Config.SMTP_PASSWORD)
-                server.send_message(msg)
-            
-            await callback.message.answer("Табель отправлен по email")
+            sent = await self.send_timesheet_to_emails()
+            if sent:
+                await callback.message.answer("Табель отправлен по email")
+            else:
+                await callback.message.answer("Не удалось сформировать табель. Проверьте данные сотрудников.")
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
             await callback.message.answer(f"Ошибка отправки: {str(e)}")
+
+    async def send_timesheet_to_emails(self, subject: Optional[str] = None) -> bool:
+        """Формирование и отправка табеля получателям из конфигурации"""
+        if not Config.SMTP_USERNAME:
+            logger.warning("SMTP не настроен для отправки табеля")
+            return False
+        if not Config.EMAIL_RECIPIENTS:
+            logger.warning("Список получателей email пуст")
+            return False
+
+        excel_file = await self.create_excel_report()
+        if not excel_file:
+            return False
+
+        message = self._build_email_message(excel_file, subject)
+        await self._send_email_async(message)
+        return True
+
+    def _build_email_message(self, excel_file: io.BytesIO, subject: Optional[str]) -> MIMEMultipart:
+        message = MIMEMultipart()
+        message['From'] = Config.SMTP_USERNAME
+        message['To'] = ', '.join(Config.EMAIL_RECIPIENTS)
+        message['Subject'] = subject or f"Табель {datetime.now().strftime('%B %Y')}"
+
+        message.attach(MIMEText("Табель учета рабочего времени во вложении", 'plain'))
+
+        attachment = MIMEBase('application', 'octet-stream')
+        attachment.set_payload(excel_file.getvalue())
+        encoders.encode_base64(attachment)
+        attachment.add_header(
+            'Content-Disposition',
+            f'attachment; filename="Табель_{datetime.now().strftime("%Y_%m")}.xlsx"'
+        )
+        message.attach(attachment)
+        return message
+
+    async def _send_email_async(self, message: MIMEMultipart):
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._send_email_sync, message)
+
+    def _send_email_sync(self, message: MIMEMultipart):
+        with smtplib.SMTP(Config.SMTP_SERVER, Config.SMTP_PORT) as server:
+            server.starttls()
+            server.login(Config.SMTP_USERNAME, Config.SMTP_PASSWORD)
+            server.send_message(message)
     
     async def show_employees(self, callback: types.CallbackQuery):
         """Показать список сотрудников"""
@@ -1093,6 +1274,11 @@ class WorkTimeBot:
             CronTrigger(hour=23, minute=0),
             id="auto_checkout"
         )
+        self.scheduler.add_job(
+            self.send_periodic_timesheet,
+            CronTrigger(hour=20, minute=0),
+            id="periodic_timesheet"
+        )
         self.scheduler.start()
         logger.info("Планировщик запущен")
     
@@ -1149,6 +1335,23 @@ class WorkTimeBot:
                 )
             except Exception as e:
                 logger.error(f"Ошибка автоматического ухода: {e}")
+
+    async def send_periodic_timesheet(self):
+        """Автоматическая отправка табеля дважды в месяц"""
+        today = date.today()
+        last_day = monthrange(today.year, today.month)[1]
+
+        if today.day not in (15, last_day):
+            return
+
+        try:
+            sent = await self.send_timesheet_to_emails(subject=f"Плановая отправка табеля {today.strftime('%B %Y')}")
+            if sent:
+                logger.info("Периодический табель отправлен")
+            else:
+                logger.warning("Не удалось отправить периодический табель: нет данных или получателей")
+        except Exception as e:
+            logger.error(f"Ошибка плановой отправки табеля: {e}")
     
     # Запуск
     async def run(self):
