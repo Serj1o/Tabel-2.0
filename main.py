@@ -261,7 +261,6 @@ class WorkTimeBot:
         builder.add(KeyboardButton(text="Болел"))
         builder.add(KeyboardButton(text="Выбрать объект"))
         builder.add(KeyboardButton(text="Отправить геолокацию", request_location=True))
-        builder.add(KeyboardButton(text="Мои отметки"))
 
         if is_admin:
             builder.add(KeyboardButton(text="Статистика"))
@@ -285,7 +284,6 @@ class WorkTimeBot:
         self.dp.message.register(self.handle_sick_btn, F.text == "Болел")
         self.dp.message.register(self.handle_select_object_btn, F.text == "Выбрать объект")
         self.dp.message.register(self.handle_stats_btn, F.text == "Статистика")
-        self.dp.message.register(self.handle_my_logs_btn, F.text == "Мои отметки")
         self.dp.message.register(self.handle_admin_btn, F.text == "Админ панель")
         
         # Геолокация
@@ -426,10 +424,17 @@ class WorkTimeBot:
 
         if sick_today:
             await message.answer("Статус 'Болел' отмечен на сегодня. Отметка ухода недоступна.")
+            await state.clear()
             return
 
         if not log:
-            await message.answer("Сначала отметьте приход.")
+            await message.answer(
+                "Сначала отметьте приход.",
+                reply_markup=self.get_main_keyboard(
+                    is_admin=await self.check_access(user_id, need_admin=True)
+                ),
+            )
+            await state.clear()
             return
 
         await state.set_state(Form.waiting_for_location)
@@ -514,115 +519,45 @@ class WorkTimeBot:
             return
         
         today = date.today()
-        month_start = date(today.year, today.month, 1)
-        
+
         async with self.pool.acquire() as conn:
-            stats = await conn.fetchrow('''
-                SELECT 
-                    COUNT(*) as days_worked,
-                    SUM(hours_worked) as total_hours,
-                    SUM(CASE WHEN status = 'sick' THEN 1 ELSE 0 END) as sick_days
-                FROM time_logs 
-                WHERE employee_id = (SELECT id FROM employees WHERE telegram_id = $1)
-                AND date >= $2 AND date <= $3
-            ''', user_id, month_start, today)
-            
-            today_log = await conn.fetchrow('''
-                SELECT check_in, check_out, hours_worked, status 
-                FROM time_logs 
-                WHERE employee_id = (SELECT id FROM employees WHERE telegram_id = $1) AND date = $2
-                LIMIT 1
-            ''', user_id, today)
-        
-        text = f"Статистика за {today.strftime('%B %Y')}:\n\n"
-        
-        if stats:
-            text += f"Отработано дней: {stats['days_worked'] or 0}\n"
-            text += f"Всего часов: {stats['total_hours'] or 0:.1f}\n"
-            text += f"Дней на больничном: {stats['sick_days'] or 0}\n"
-        
-        text += "\nСегодня:\n"
-        if today_log:
-            if today_log['status'] == 'sick':
-                text += "Статус: Больничный\n"
-            else:
-                if today_log['check_in']:
-                    text += f"Приход: {today_log['check_in'].strftime('%H:%M')}\n"
-                if today_log['check_out']:
-                    text += f"Уход: {today_log['check_out'].strftime('%H:%M')}\n"
-                    text += f"Отработано: {today_log['hours_worked'] or 0:.1f} ч.\n"
-                else:
-                    text += "Еще на работе\n"
-        else:
-            text += "Нет отметок\n"
-        
-        await message.answer(text)
-    
-    async def handle_my_logs_btn(self, message: types.Message):
-        """Обработка кнопки 'Мои отметки'"""
-        user_id = message.from_user.id
-        
-        if not await self.check_access(user_id):
-            await message.answer("Доступ запрещен.")
-            return
-        
-        # Получаем логи за последние 7 дней
-        week_ago = date.today() - timedelta(days=7)
-        
-        async with self.pool.acquire() as conn:
-            logs = await conn.fetch('''
-                SELECT tl.date, tl.check_in, tl.check_out, 
-                       tl.hours_worked, tl.status,
-                       o.name as object_name
+            logs = await conn.fetch(
+                '''
+                SELECT e.full_name, tl.check_in, tl.check_out, tl.hours_worked, tl.date, tl.status,
+                       COALESCE(o.name, 'Не указан') AS object_name
                 FROM time_logs tl
+                JOIN employees e ON tl.employee_id = e.id
                 LEFT JOIN objects o ON tl.object_id = o.id
-                WHERE tl.employee_id = (SELECT id FROM employees WHERE telegram_id = $1)
-                AND tl.date >= $2
-                ORDER BY tl.date DESC, tl.check_in DESC
-            ''', user_id, week_ago)
-        
+                WHERE tl.date = $1 AND e.is_active = TRUE AND e.is_approved = TRUE AND e.is_admin = FALSE
+                ORDER BY e.full_name
+                ''',
+                today,
+            )
+
+        text = "Статистика за сегодня:\n\n"
+
         if not logs:
-            await message.answer("У вас нет отметок за последнюю неделю.")
-            return
-        
-        # Формируем сообщение
-        logs_text = "Ваши отметки за последние 7 дней:\n\n"
-        
-        current_date = None
-        for log in logs:
-            log_date = log['date']
-            
-            if current_date != log_date:
-                current_date = log_date
-                logs_text += f"\n{log_date.strftime('%d.%m.%Y')}:\n"
-            
-            if log['status'] == 'sick':
-                logs_text += "  Больничный\n"
-            else:
-                object_name = log['object_name'] or "Не указан"
-                
-                if log['check_in']:
-                    check_in = log['check_in'].strftime('%H:%M')
-                    logs_text += f"  {check_in}"
-                else:
-                    logs_text += "  --:--"
-                
-                if log['check_out']:
-                    check_out = log['check_out'].strftime('%H:%M')
-                    logs_text += f" - {check_out}"
-                else:
-                    logs_text += " - --:--"
-                
-                hours = log['hours_worked'] or 0
-                logs_text += f" {hours:.1f}ч. {object_name}\n"
-        
-        # Если сообщение слишком длинное, делим на части
-        if len(logs_text) > 4000:
-            parts = [logs_text[i:i+4000] for i in range(0, len(logs_text), 4000)]
-            for part in parts:
-                await message.answer(part)
+            text += "Нет отметок за сегодня."
         else:
-            await message.answer(logs_text)
+            for log in logs:
+                if log['status'] == 'sick':
+                    text += (
+                        f"{log['full_name']}: Больничный, дата {log['date'].strftime('%d.%m.%Y')}, "
+                        f"участок {log['object_name']}\n"
+                    )
+                    continue
+
+                check_in = log['check_in'].strftime('%H:%M') if log['check_in'] else '—'
+                check_out = log['check_out'].strftime('%H:%M') if log['check_out'] else '—'
+                hours = (log['hours_worked'] or 0)
+
+                text += (
+                    f"{log['full_name']}: приход {check_in}, уход {check_out}, "
+                    f"отработано {hours:.1f} ч., дата {log['date'].strftime('%d.%m.%Y')}, "
+                    f"участок {log['object_name']}\n"
+                )
+
+        await message.answer(text)
     
     async def handle_admin_btn(self, message: types.Message):
         """Обработка кнопки 'Админ панель'"""
