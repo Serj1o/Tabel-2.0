@@ -1180,12 +1180,12 @@ class WorkTimeBot:
     
     async def show_employees(self, callback: types.CallbackQuery):
         """Показать список сотрудников"""
-    async with self.pool.acquire() as conn:
-        employees = await conn.fetch('''
-            SELECT full_name, position, telegram_id, is_admin, 
-                   (SELECT COUNT(*) FROM time_logs WHERE employee_id = employees.id 
-                    AND EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM CURRENT_DATE)) as days_worked
-            FROM employees WHERE is_approved = TRUE ORDER BY full_name
+        async with self.pool.acquire() as conn:
+            employees = await conn.fetch('''
+                SELECT full_name, position, telegram_id, is_admin, 
+                       (SELECT COUNT(*) FROM time_logs WHERE employee_id = employees.id 
+                        AND EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM CURRENT_DATE)) as days_worked
+                FROM employees WHERE is_approved = TRUE ORDER BY full_name
             ''')
         
         text = "Сотрудники:\n\n"
@@ -1219,17 +1219,17 @@ class WorkTimeBot:
         today = date.today()
         month_start = date(today.year, today.month, 1)
         
-    async with self.pool.acquire() as conn:
-        stats = await conn.fetchrow('''
-            SELECT 
-                COUNT(DISTINCT e.id) as total_employees,
-                COUNT(DISTINCT tl.employee_id) as worked_this_month,
-                SUM(tl.hours_worked) as total_hours,
-                AVG(tl.hours_worked) as avg_hours
-            FROM employees e
-            LEFT JOIN time_logs tl ON e.id = tl.employee_id 
-                AND tl.date >= $1 AND tl.date <= $2
-            WHERE e.is_approved = TRUE AND e.is_active = TRUE
+        async with self.pool.acquire() as conn:
+            stats = await conn.fetchrow('''
+                SELECT 
+                    COUNT(DISTINCT e.id) as total_employees,
+                    COUNT(DISTINCT tl.employee_id) as worked_this_month,
+                    SUM(tl.hours_worked) as total_hours,
+                    AVG(tl.hours_worked) as avg_hours
+                FROM employees e
+                LEFT JOIN time_logs tl ON e.id = tl.employee_id 
+                    AND tl.date >= $1 AND tl.date <= $2
+                WHERE e.is_approved = TRUE AND e.is_active = TRUE
             ''', month_start, today)
             
         today_stats = await conn.fetchrow('''
@@ -1270,13 +1270,13 @@ class WorkTimeBot:
         """Напоминание об уходе"""
         today = date.today()
         
-    async with self.pool.acquire() as conn:
-        employees = await conn.fetch('''
-            SELECT e.telegram_id, e.full_name
-            FROM time_logs tl
-            JOIN employees e ON tl.employee_id = e.id
-            WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
-            AND e.is_active = TRUE
+        async with self.pool.acquire() as conn:
+            employees = await conn.fetch('''
+                SELECT e.telegram_id, e.full_name
+                FROM time_logs tl
+                JOIN employees e ON tl.employee_id = e.id
+                WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
+                AND e.is_active = TRUE
             ''', today)
         
         for emp in employees:
@@ -1293,13 +1293,13 @@ class WorkTimeBot:
         """Автоматический уход в 18:00"""
         today = date.today()
         
-    async with self.pool.acquire() as conn:
-        logs = await conn.fetch('''
-            SELECT tl.id, e.telegram_id, e.full_name, tl.check_in
-            FROM time_logs tl
-            JOIN employees e ON tl.employee_id = e.id
-            WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
-        ''', today)
+        async with self.pool.acquire() as conn:
+            logs = await conn.fetch('''
+                SELECT tl.id, e.telegram_id, e.full_name, tl.check_in
+                FROM time_logs tl
+                JOIN employees e ON tl.employee_id = e.id
+                WHERE tl.date = $1 AND tl.check_in IS NOT NULL AND tl.check_out IS NULL
+            ''', today)
         
     now = datetime.now()
     for log in logs:
