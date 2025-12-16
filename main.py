@@ -1308,17 +1308,17 @@ class WorkTimeBot:
                 hours = min(math.ceil(hours), Config.MAX_WORK_HOURS)
                 
     async with self.pool.acquire() as conn:
-            await conn.execute('''
-                UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
-                ''', now, hours, log['id'])
+        await conn.execute('''
+            UPDATE time_logs SET check_out = $1, hours_worked = $2 WHERE id = $3
+            ''', now, hours, log['id'])
                 
-            await self.bot.send_message(
-                log['telegram_id'],
-                f"Автоматический уход в {now.strftime('%H:%M')}\nОтработано: {hours} ч.",
-                reply_markup=self.get_main_keyboard()
-                )
-            except:
-                pass
+        await self.bot.send_message(
+            log['telegram_id'],
+            f"Автоматический уход в {now.strftime('%H:%M')}\nОтработано: {hours} ч.",
+            reply_markup=self.get_main_keyboard()
+            )
+        except:
+            pass
     
     # Запуск
     async def run(self):
