@@ -155,6 +155,7 @@ class WorkTimeBot:
                 ''')
 
                 # Гарантируем наличие критичных столбцов для обратной совместимости
+                await self.ensure_position_columns(conn)
                 await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
                 await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
 
@@ -174,6 +175,20 @@ class WorkTimeBot:
             raise
 
     async def ensure_column(self, conn: asyncpg.Connection, table: str, column: str, definition: str):
+        """Добавляет столбец, если его нет (используем IF NOT EXISTS для надёжности)."""
+        try:
+            await conn.execute(
+                f"ALTER TABLE IF NOT EXISTS {table} ADD COLUMN IF NOT EXISTS {column} {definition}"
+            )
+            logger.info("Убедились в наличии столбца %s в таблице %s", column, table)
+        except Exception as err:
+            logger.error("Не удалось добавить столбец %s в таблицу %s: %s", column, table, err)
+            raise
+
+    async def ensure_position_columns(self, conn: asyncpg.Connection):
+        """Гарантирует наличие столбца position в ключевых таблицах."""
+        await self.ensure_column(conn, "employees", "position", "VARCHAR(100)")
+        await self.ensure_column(conn, "access_requests", "position", "VARCHAR(100)")
         """Добавляет столбец, если его нет (для миграций без простоя)"""
         column_exists = await conn.fetchval(
             """
@@ -564,6 +579,10 @@ class WorkTimeBot:
                 await callback.answer("Нет прав", show_alert=True)
                 return
 
+            # Подстраховка: перед любыми админ-действиями проверяем наличие критичных столбцов
+            async with self.pool.acquire() as conn:
+                await self.ensure_position_columns(conn)
+
             try:
                 if data == "admin_requests":
                     await self.show_pending_requests(callback)  # Используем правильное имя метода
@@ -593,10 +612,19 @@ class WorkTimeBot:
     async def show_pending_requests(self, callback: types.CallbackQuery):
         """Показать ожидающие запросы на доступ"""
         async with self.pool.acquire() as conn:
-            requests = await conn.fetch('''
-                SELECT id, telegram_id, full_name, position FROM access_requests 
-                WHERE status = 'pending' ORDER BY id DESC
-            ''')
+            await self.ensure_position_columns(conn)
+            try:
+                requests = await conn.fetch('''
+                    SELECT id, telegram_id, full_name, position FROM access_requests
+                    WHERE status = 'pending' ORDER BY id DESC
+                ''')
+            except asyncpg.UndefinedColumnError:
+                # Если база еще не мигрирована, мигрируем на лету и пробуем снова
+                await self.ensure_position_columns(conn)
+                requests = await conn.fetch('''
+                    SELECT id, telegram_id, full_name, position FROM access_requests
+                    WHERE status = 'pending' ORDER BY id DESC
+                ''')
         
         if not requests:
             await callback.message.answer("Нет ожидающих запросов")
@@ -690,11 +718,19 @@ class WorkTimeBot:
             if not full_name:
                 await message.answer("Пожалуйста, введите ваше ФИО (можно через '|' указать должность).")
                 return
-            
+
             async with self.pool.acquire() as conn:
-                await conn.execute('''
-                    INSERT INTO access_requests (telegram_id, full_name, position) VALUES ($1, $2, $3)
-                ''', user_id, full_name, position)
+                await self.ensure_position_columns(conn)
+                try:
+                    await conn.execute('''
+                        INSERT INTO access_requests (telegram_id, full_name, position) VALUES ($1, $2, $3)
+                    ''', user_id, full_name, position)
+                except asyncpg.UndefinedColumnError:
+                    # Подстраховка для старых БД
+                    await self.ensure_position_columns(conn)
+                    await conn.execute('''
+                        INSERT INTO access_requests (telegram_id, full_name, position) VALUES ($1, $2, $3)
+                    ''', user_id, full_name, position)
                 
                 # Уведомляем администраторов
                 admins = await conn.fetch('SELECT telegram_id FROM employees WHERE is_admin = TRUE')
@@ -937,11 +973,18 @@ class WorkTimeBot:
     async def handle_approval(self, callback: types.CallbackQuery):
         """Одобрить запрос"""
         req_id = int(callback.data.split("_")[1])
-        
+
         async with self.pool.acquire() as conn:
-            req = await conn.fetchrow('''
-                SELECT telegram_id, full_name, position FROM access_requests WHERE id = $1
-            ''', req_id)
+            await self.ensure_position_columns(conn)
+            try:
+                req = await conn.fetchrow('''
+                    SELECT telegram_id, full_name, position FROM access_requests WHERE id = $1
+                ''', req_id)
+            except asyncpg.UndefinedColumnError:
+                await self.ensure_position_columns(conn)
+                req = await conn.fetchrow('''
+                    SELECT telegram_id, full_name, position FROM access_requests WHERE id = $1
+                ''', req_id)
             
             if not req:
                 await callback.answer("Запрос не найден")
@@ -981,11 +1024,18 @@ class WorkTimeBot:
     async def handle_request_access(self, message: types.Message, state: FSMContext):
         """Запрос доступа"""
         user_id = message.from_user.id
-        
+
         async with self.pool.acquire() as conn:
-            existing = await conn.fetchval('''
-                SELECT status FROM access_requests WHERE telegram_id = $1 ORDER BY id DESC LIMIT 1
-            ''', user_id)
+            await self.ensure_position_columns(conn)
+            try:
+                existing = await conn.fetchval('''
+                    SELECT status FROM access_requests WHERE telegram_id = $1 ORDER BY id DESC LIMIT 1
+                ''', user_id)
+            except asyncpg.UndefinedColumnError:
+                await self.ensure_position_columns(conn)
+                existing = await conn.fetchval('''
+                    SELECT status FROM access_requests WHERE telegram_id = $1 ORDER BY id DESC LIMIT 1
+                ''', user_id)
             
             if existing == 'pending':
                 await message.answer("Ваш запрос уже на рассмотрении.")
@@ -999,9 +1049,14 @@ class WorkTimeBot:
     async def handle_rejection(self, callback: types.CallbackQuery):
         """Отклонить запрос"""
         req_id = int(callback.data.split("_")[1])
-        
+
         async with self.pool.acquire() as conn:
-            req = await conn.fetchrow('SELECT full_name FROM access_requests WHERE id = $1', req_id)
+            await self.ensure_position_columns(conn)
+            try:
+                req = await conn.fetchrow('SELECT full_name FROM access_requests WHERE id = $1', req_id)
+            except asyncpg.UndefinedColumnError:
+                await self.ensure_position_columns(conn)
+                req = await conn.fetchrow('SELECT full_name FROM access_requests WHERE id = $1', req_id)
             if req:
                 await conn.execute("UPDATE access_requests SET status = 'rejected' WHERE id = $1", req_id)
         
