@@ -1062,18 +1062,18 @@ class WorkTimeBot:
                 ORDER BY full_name
             ''')
             
-        logs = await conn.fetch('''
-            SELECT tl.employee_id, tl.date, tl.check_in, tl.check_out,
-                   tl.hours_worked, tl.status, tl.check_in_lat, tl.check_in_lon,
-                   tl.check_out_lat, tl.check_out_lon,
-                   o.name as object_name, e.full_name, e.position
-            FROM time_logs tl
-            JOIN employees e ON tl.employee_id = e.id
-            LEFT JOIN objects o ON tl.object_id = o.id
-            WHERE EXTRACT(YEAR FROM tl.date) = $1 
-            AND EXTRACT(MONTH FROM tl.date) = $2
-            AND e.is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
-            ORDER BY e.full_name, tl.date
+            logs = await conn.fetch('''
+                SELECT tl.employee_id, tl.date, tl.check_in, tl.check_out,
+                       tl.hours_worked, tl.status, tl.check_in_lat, tl.check_in_lon,
+                       tl.check_out_lat, tl.check_out_lon,
+                       o.name as object_name, e.full_name, e.position
+                FROM time_logs tl
+                JOIN employees e ON tl.employee_id = e.id
+                LEFT JOIN objects o ON tl.object_id = o.id
+                WHERE EXTRACT(YEAR FROM tl.date) = $1 
+                AND EXTRACT(MONTH FROM tl.date) = $2
+                AND e.is_admin = FALSE  -- ИСКЛЮЧАЕМ АДМИНИСТРАТОРОВ
+                ORDER BY e.full_name, tl.date
             ''', year, month)
         
         if not employees:
