@@ -318,8 +318,31 @@ class WorkTimeBot:
         if msg_time.tzinfo is None:
             msg_time = msg_time.replace(tzinfo=timezone.utc)
         return msg_time.astimezone(MOSCOW_TZ)
+
+    async def build_main_keyboard_for_user(self, user_id: int) -> ReplyKeyboardMarkup:
+        """Формирует главное меню с учетом роли и статуса больничного на сегодня"""
+        is_admin = False
+        sick_today = False
+
+        async with self.pool.acquire() as conn:
+            is_admin = bool(await conn.fetchval(
+                'SELECT is_admin FROM employees WHERE telegram_id = $1',
+                user_id,
+            ) or False)
+            sick_today = bool(await conn.fetchval(
+                '''
+                SELECT 1 FROM time_logs
+                WHERE employee_id = (SELECT id FROM employees WHERE telegram_id = $1)
+                  AND date = $2 AND status = 'sick'
+                LIMIT 1
+                ''',
+                user_id,
+                self.moscow_today(),
+            ) or False)
+
+        return self.get_main_keyboard(is_admin=is_admin, show_remove_sick=sick_today)
      
-    def get_main_keyboard(self, is_admin: bool = False) -> ReplyKeyboardMarkup:
+    def get_main_keyboard(self, is_admin: bool = False, show_remove_sick: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
         builder = ReplyKeyboardBuilder()
         
@@ -327,6 +350,8 @@ class WorkTimeBot:
         builder.add(KeyboardButton(text="Пришел"))
         builder.add(KeyboardButton(text="Ушел"))
         builder.add(KeyboardButton(text="Болел"))
+        if show_remove_sick:
+            builder.add(KeyboardButton(text="Снять больничный"))
         builder.add(KeyboardButton(text="Выбрать объект"))
         builder.add(KeyboardButton(text="Отправить геолокацию", request_location=True))
 
@@ -350,6 +375,7 @@ class WorkTimeBot:
         self.dp.message.register(self.handle_come, F.text == "Пришел")
         self.dp.message.register(self.handle_leave, F.text == "Ушел")
         self.dp.message.register(self.handle_sick_btn, F.text == "Болел")
+        self.dp.message.register(self.handle_sick_clear, F.text == "Снять больничный")
         self.dp.message.register(self.handle_select_object_btn, F.text == "Выбрать объект")
         self.dp.message.register(self.handle_stats_btn, F.text == "Статистика")
         self.dp.message.register(self.handle_admin_btn, F.text == "Админ панель")
@@ -412,7 +438,7 @@ class WorkTimeBot:
                 text += "Вы администратор системы.\n"
             text += "Используйте меню ниже для работы с системой."
             
-            keyboard = self.get_main_keyboard(is_admin=user['is_admin'])
+            keyboard = await self.build_main_keyboard_for_user(user_id)
             await message.answer(text, reply_markup=keyboard)
         else:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[
@@ -452,7 +478,10 @@ class WorkTimeBot:
             ''', user_id, today)
 
         if sick_today:
-            await message.answer("Нельзя отметить приход в день, когда стоит статус 'Болел'.")
+            await message.answer(
+                "Нельзя отметить приход в день, когда стоит статус 'Болел'.",
+                reply_markup=await self.build_main_keyboard_for_user(user_id),
+            )
             return
 
         if existing:
@@ -491,7 +520,10 @@ class WorkTimeBot:
             ''', user_id, today)
 
         if sick_today:
-            await message.answer("Статус 'Болел' отмечен на сегодня. Отметка ухода недоступна.")
+            await message.answer(
+                "Статус 'Болел' отмечен на сегодня. Отметка ухода недоступна.",
+                reply_markup=await self.build_main_keyboard_for_user(user_id),
+            )
             await state.clear()
             return
 
@@ -513,10 +545,7 @@ class WorkTimeBot:
         """Возврат в главное меню"""
         user_id = message.from_user.id
         async with self.pool.acquire() as conn:
-            is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
-            is_admin = bool(is_admin)
-
-        keyboard = self.get_main_keyboard(is_admin=is_admin)
+            keyboard = await self.build_main_keyboard_for_user(user_id)
         await message.answer("Операция отменена", reply_markup=keyboard)
         await state.clear()
     
@@ -552,10 +581,16 @@ class WorkTimeBot:
             )
 
         if working_today:
-            await message.answer("Нельзя поставить статус 'Болел', пока отмечен приход.")
+            await message.answer(
+                "Нельзя поставить статус 'Болел', пока отмечен приход.",
+                reply_markup=await self.build_main_keyboard_for_user(user_id),
+            )
             return
         if sick_today:
-            await message.answer("Болничный уже отмечен на сегодня.")
+            await message.answer(
+                "Болничный уже отмечен на сегодня.",
+                reply_markup=await self.build_main_keyboard_for_user(user_id),
+            )
             return
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1014,7 +1049,7 @@ class WorkTimeBot:
                     SET full_name = $1, position = $2, telegram_id = $3,
                         is_admin = $4, is_active = $5, is_approved = $6
                     WHERE id = $7
-                ''', new_full_name, new_position, new_telegram_id, new_is_admin, new_is_active, new_is_approved, target_employee_id)
+                    ''', new_full_name, new_position, new_telegram_id, new_is_admin, new_is_active, new_is_approved, target_employee_id)
 
                 updated = await conn.fetchrow(
                     '''
@@ -1024,7 +1059,10 @@ class WorkTimeBot:
                     target_employee_id,
                 )
                 summary = self._format_employee_summary(updated) if updated else "Данные сотрудника обновлены"
-                await message.answer(f"Данные сотрудника обновлены:\n{summary}", reply_markup=self.get_main_keyboard())
+                await message.answer(
+                    f"Данные сотрудника обновлены:\n{summary}",
+                    reply_markup=await self.build_main_keyboard_for_user(message.from_user.id),
+                )
             else:
                 await conn.execute('''
                     INSERT INTO employees (full_name, position, telegram_id, is_admin, is_active, is_approved)
@@ -1068,7 +1106,10 @@ class WorkTimeBot:
                 today,
             )
             if working_today:
-                await message.answer("Приход уже отмечен, больничный недоступен.", reply_markup=self.get_main_keyboard())
+                await message.answer(
+                    "Приход уже отмечен, больничный недоступен.",
+                    reply_markup=await self.build_main_keyboard_for_user(user_id),
+                )
                 await state.clear()
                 return
             await conn.execute('''
@@ -1076,8 +1117,10 @@ class WorkTimeBot:
                 VALUES ((SELECT id FROM employees WHERE telegram_id = $1), $2, 'sick', $3)
             ''', user_id, today, reason)
         
-        await message.answer(f"Больничный отмечен\nПричина: {reason if reason else 'не указана'}",
-                           reply_markup=self.get_main_keyboard())
+        await message.answer(
+            f"Больничный отмечен\nПричина: {reason if reason else 'не указана'}",
+            reply_markup=await self.build_main_keyboard_for_user(user_id),
+        )
         await state.clear()
 
     async def start_object_input(self, callback: types.CallbackQuery, state: FSMContext, action: str = "add"):
@@ -1617,7 +1660,7 @@ class WorkTimeBot:
 
             is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
 
-        keyboard = self.get_main_keyboard(is_admin=is_admin)
+        keyboard = await self.build_main_keyboard_for_user(user_id)
         await self.bot.send_message(
             user_id,
             f"Уход отмечен!\nВремя: {now.strftime('%H:%M')}\nОбъект: {obj['name']}\nОтработано: {hours} ч.",
@@ -1675,9 +1718,7 @@ class WorkTimeBot:
             ''', now, hours, log_id)
             
             # Получаем статус администратора
-            is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
-        
-        keyboard = self.get_main_keyboard(is_admin=is_admin)
+        keyboard = await self.build_main_keyboard_for_user(user_id)
         await self.bot.send_message(
             user_id,
             f"Уход отмечен в {now.strftime('%H:%M')}\nОтработано: {hours} ч.",
@@ -2079,6 +2120,47 @@ class WorkTimeBot:
             ),
             caption="Общий табель без разбивки по объектам",
         )
+
+    async def handle_sick_clear(self, message: types.Message, state: FSMContext):
+        """Снятие больничного на сегодня"""
+        user_id = message.from_user.id
+        if not await self.check_access(user_id):
+            await message.answer("Доступ запрещен.")
+            return
+
+        today = self.moscow_today()
+        async with self.pool.acquire() as conn:
+            sick_today = await conn.fetchval(
+                '''
+                SELECT id FROM time_logs
+                WHERE employee_id = (SELECT id FROM employees WHERE telegram_id = $1)
+                  AND date = $2 AND status = 'sick'
+                LIMIT 1
+                ''',
+                user_id,
+                today,
+            )
+
+            if not sick_today:
+                await message.answer(
+                    "На сегодня больничный не установлен.",
+                    reply_markup=await self.build_main_keyboard_for_user(user_id),
+                )
+                return
+
+            await conn.execute(
+                '''
+                DELETE FROM time_logs
+                WHERE id = $1
+                ''',
+                sick_today,
+            )
+
+        await message.answer(
+            "Больничный снят. Можно отмечать приход.",
+            reply_markup=await self.build_main_keyboard_for_user(user_id),
+        )
+        await state.clear()
 
     async def send_timesheet_to_emails(self, subject: Optional[str] = None) -> bool:
         """Заглушка отправки по email (отложено)"""
