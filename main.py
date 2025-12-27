@@ -2301,11 +2301,6 @@ class WorkTimeBot:
             id="remind_checkin_1"
         )
         self.scheduler.add_job(
-            self.remind_checkin,
-            CronTrigger(hour=9, minute=0),
-            id="remind_checkin_2"
-        )
-        self.scheduler.add_job(
             self.remind_checkout,
             CronTrigger(hour=18, minute=0),
             id="reminder"
