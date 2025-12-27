@@ -53,6 +53,23 @@ class Config:
     WORK_START_HOUR = 9
     MAX_WORK_HOURS = 8
 
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+
+
+def now_moscow() -> datetime:
+    """Текущее московское время с информацией о часовом поясе."""
+    return datetime.now(MOSCOW_TZ)
+
+
+def now_moscow_naive() -> datetime:
+    """Текущее московское время без tzinfo для сохранения в БД."""
+    return now_moscow().replace(tzinfo=None)
+
+
+def today_moscow() -> date:
+    """Текущая дата по московскому времени."""
+    return now_moscow().date()
+
 if not Config.BOT_TOKEN or not Config.DATABASE_URL:
     raise ValueError("Проверьте BOT_TOKEN и DATABASE_URL в переменных окружения")
 
@@ -345,7 +362,13 @@ class WorkTimeBot:
     def get_main_keyboard(self, is_admin: bool = False, show_remove_sick: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
         builder = ReplyKeyboardBuilder()
-        
+
+        if is_admin:
+            builder.add(KeyboardButton(text="Статистика"))
+            builder.add(KeyboardButton(text="Админ панель"))
+            builder.adjust(1)
+            return builder.as_markup(resize_keyboard=True)
+
         # Основные кнопки для сотрудников
         builder.add(KeyboardButton(text="Пришел"))
         builder.add(KeyboardButton(text="Ушел"))
@@ -355,10 +378,6 @@ class WorkTimeBot:
         builder.add(KeyboardButton(text="Выбрать объект"))
         builder.add(KeyboardButton(text="Отправить геолокацию", request_location=True))
 
-        if is_admin:
-            builder.add(KeyboardButton(text="Статистика"))
-            builder.add(KeyboardButton(text="Админ панель"))
-        
         builder.adjust(2)  # 2 кнопки в ряд
         return builder.as_markup(resize_keyboard=True)
     
@@ -461,6 +480,17 @@ class WorkTimeBot:
 
         today = self.moscow_today()
         async with self.pool.acquire() as conn:
+            user = await conn.fetchrow(
+                'SELECT is_admin FROM employees WHERE telegram_id = $1',
+                user_id,
+            )
+            if user and user['is_admin']:
+                await message.answer(
+                    "Отметки прихода недоступны администраторам.",
+                    reply_markup=self.get_main_keyboard(is_admin=True),
+                )
+                return
+
             sick_today = await conn.fetchval(
                 '''
                 SELECT 1 FROM time_logs
@@ -502,6 +532,17 @@ class WorkTimeBot:
 
         today = self.moscow_today()
         async with self.pool.acquire() as conn:
+            user = await conn.fetchrow(
+                'SELECT is_admin FROM employees WHERE telegram_id = $1',
+                user_id,
+            )
+            if user and user['is_admin']:
+                await message.answer(
+                    "Отметки ухода недоступны администраторам.",
+                    reply_markup=self.get_main_keyboard(is_admin=True),
+                )
+                return
+
             sick_today = await conn.fetchval(
                 '''
                 SELECT 1 FROM time_logs
@@ -606,11 +647,20 @@ class WorkTimeBot:
     async def handle_select_object_btn(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Выбрать объект'"""
         user_id = message.from_user.id
-        
+
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
             return
-        
+
+        async with self.pool.acquire() as conn:
+            is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
+            if is_admin:
+                await message.answer(
+                    "Выбор объекта доступен только сотрудникам.",
+                    reply_markup=self.get_main_keyboard(is_admin=True),
+                )
+                return
+
         await self.show_objects(message, state, "select")
     
     async def handle_stats_btn(self, message: types.Message):
@@ -624,9 +674,17 @@ class WorkTimeBot:
         today = self.moscow_today()
 
         async with self.pool.acquire() as conn:
+            employees = await conn.fetch(
+                '''
+                SELECT id, full_name
+                FROM employees
+                WHERE is_active = TRUE AND is_approved = TRUE AND is_admin = FALSE
+                ORDER BY full_name
+                '''
+            )
             logs = await conn.fetch(
                 '''
-                SELECT e.full_name, tl.check_in, tl.check_out, tl.hours_worked, tl.date, tl.status,
+                SELECT tl.employee_id, tl.check_in, tl.status,
                        COALESCE(o.name, 'Не указан') AS object_name
                 FROM time_logs tl
                 JOIN employees e ON tl.employee_id = e.id
@@ -665,28 +723,55 @@ class WorkTimeBot:
                 today,
             )
 
-        text = "Статистика за сегодня:\n\n"
+        log_map: Dict[int, asyncpg.Record] = {}
+        for log in logs:
+            existing = log_map.get(log['employee_id'])
+            if not existing:
+                log_map[log['employee_id']] = log
+                continue
+            if log['check_in'] and (existing['check_in'] is None or log['check_in'] < existing['check_in']):
+                log_map[log['employee_id']] = log
 
-        if not logs:
-            text += "Нет отметок за сегодня."
-        else:
-            for log in logs:
-                if log['status'] == 'sick':
-                    text += (
-                        f"{log['full_name']}: Больничный, дата {log['date'].strftime('%d.%m.%Y')}, "
-                        f"участок {log['object_name']}\n"
+        arrived = []
+        sick = []
+        missing = []
+
+        for emp in employees:
+            entry = log_map.get(emp['id'])
+            if not entry:
+                missing.append(emp['full_name'])
+                continue
+            if entry['status'] == 'sick':
+                sick.append(emp['full_name'])
+                continue
+            if entry['check_in']:
+                arrived.append(
+                    (
+                        emp['full_name'],
+                        entry['check_in'],
+                        entry['object_name'],
                     )
-                    continue
-
-                check_in = log['check_in'].strftime('%H:%M') if log['check_in'] else '—'
-                check_out = log['check_out'].strftime('%H:%M') if log['check_out'] else '—'
-                hours = (log['hours_worked'] or 0)
-
-                text += (
-                    f"{log['full_name']}: приход {check_in}, уход {check_out}, "
-                    f"отработано {hours:.1f} ч., дата {log['date'].strftime('%d.%m.%Y')}, "
-                    f"участок {log['object_name']}\n"
                 )
+            else:
+                missing.append(emp['full_name'])
+
+        text_sections = ["Статистика по персоналу за сегодня:\n"]
+
+        def format_block(title: str, rows: list[str]):
+            if not rows:
+                return f"{title}: нет\n"
+            return f"{title}:\n" + "\n".join(rows) + "\n"
+
+        arrived_rows = [
+            f"{idx}. {name} — {check_in.strftime('%H:%M')} ({obj})"
+            for idx, (name, check_in, obj) in enumerate(arrived, start=1)
+        ]
+        missing_rows = [f"{idx}. {name}" for idx, name in enumerate(missing, start=1)]
+        sick_rows = [f"{idx}. {name}" for idx, name in enumerate(sick, start=1)]
+
+        text_sections.append(format_block("Пришли", arrived_rows))
+        text_sections.append(format_block("Не отметились", missing_rows))
+        text_sections.append(format_block("Болеют", sick_rows))
 
         text += "\nНе отметили приход:\n"
         if not missing_checkins:
@@ -1093,7 +1178,7 @@ class WorkTimeBot:
         user_id = data.get("user_id")
         reason = message.text
 
-        today = self.moscow_today()
+        today = today_moscow()
         async with self.pool.acquire() as conn:
             working_today = await conn.fetchval(
                 '''
@@ -1851,7 +1936,7 @@ class WorkTimeBot:
                     chat_id=callback.from_user.id,
                     document=types.BufferedInputFile(
                         excel_file.getvalue(),
-                        filename=f"{filename}_{datetime.now().strftime('%Y_%m_%d')}.xlsx"
+                        filename=f"{filename}_{now_moscow().strftime('%Y_%m_%d')}.xlsx"
                     ),
                     caption=caption
                 )
@@ -2116,7 +2201,7 @@ class WorkTimeBot:
             chat_id=callback.from_user.id,
             document=types.BufferedInputFile(
                 excel_file.getvalue(),
-                filename=f"Общий_табель_{datetime.now().strftime('%Y_%m_%d')}.xlsx",
+                filename=f"Общий_табель_{now_moscow().strftime('%Y_%m_%d')}.xlsx",
             ),
             caption="Общий табель без разбивки по объектам",
         )
@@ -2171,7 +2256,7 @@ class WorkTimeBot:
         message = MIMEMultipart()
         message['From'] = Config.SMTP_USERNAME
         message['To'] = ', '.join(Config.EMAIL_RECIPIENTS)
-        message['Subject'] = subject or f"Табель {datetime.now().strftime('%B %Y')}"
+        message['Subject'] = subject or f"Табель {now_moscow().strftime('%B %Y')}"
 
         message.attach(MIMEText("Табель учета рабочего времени во вложении", 'plain'))
 
@@ -2180,7 +2265,7 @@ class WorkTimeBot:
         encoders.encode_base64(attachment)
         attachment.add_header(
             'Content-Disposition',
-            f'attachment; filename="Табель_{datetime.now().strftime("%Y_%m")}.xlsx"'
+            f'attachment; filename="Табель_{now_moscow().strftime("%Y_%m")}.xlsx"'
         )
         message.attach(attachment)
         return message
