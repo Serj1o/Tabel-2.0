@@ -711,6 +711,20 @@ class WorkTimeBot:
             for row in missing_checkouts:
                 text += f"• {row['full_name']}\n"
 
+        text += "\nНе отметили приход:\n"
+        if not missing_checkins:
+            text += "—\n"
+        else:
+            for row in missing_checkins:
+                text += f"• {row['full_name']}\n"
+
+        text += "\nНе отметили уход:\n"
+        if not missing_checkouts:
+            text += "—"
+        else:
+            for row in missing_checkouts:
+                text += f"• {row['full_name']}\n"
+
         await message.answer(text)
     
     async def handle_admin_btn(self, message: types.Message):
