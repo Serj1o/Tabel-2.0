@@ -40,3 +40,4 @@ yarl==1.22.0
 python-dotenv==1.1.1
 asyncpg
 geopy>=2.4.1
+holidays>=0.60
