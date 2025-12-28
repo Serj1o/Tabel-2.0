@@ -45,7 +45,6 @@ class Config:
     LOCATION_RADIUS = int(os.getenv("LOCATION_RADIUS", "1000"))
     LOCATION_MAX_AGE_SECONDS = int(os.getenv("LOCATION_MAX_AGE_SECONDS", "300"))
     LOCATION_MAX_ACCURACY = float(os.getenv("LOCATION_MAX_ACCURACY", "250"))
-    LOCATION_SECONDARY_RADIUS_MULT = float(os.getenv("LOCATION_SECONDARY_RADIUS_MULT", "2"))
     SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
     SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
@@ -53,6 +52,23 @@ class Config:
     EMAIL_RECIPIENTS = [x.strip() for x in os.getenv("EMAIL_RECIPIENTS", "").split(",") if x.strip()]
     WORK_START_HOUR = 9
     MAX_WORK_HOURS = 8
+
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+
+
+def now_moscow() -> datetime:
+    """Текущее московское время с информацией о часовом поясе."""
+    return datetime.now(MOSCOW_TZ)
+
+
+def now_moscow_naive() -> datetime:
+    """Текущее московское время без tzinfo для сохранения в БД."""
+    return now_moscow().replace(tzinfo=None)
+
+
+def today_moscow() -> date:
+    """Текущая дата по московскому времени."""
+    return now_moscow().date()
 
 if not Config.BOT_TOKEN or not Config.DATABASE_URL:
     raise ValueError("Проверьте BOT_TOKEN и DATABASE_URL в переменных окружения")
@@ -194,27 +210,6 @@ class WorkTimeBot:
                     )
                 ''')
 
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS manual_presence_requests (
-                        id SERIAL PRIMARY KEY,
-                        employee_id INTEGER REFERENCES employees(id),
-                        object_id INTEGER REFERENCES objects(id),
-                        action VARCHAR(20),
-                        requested_at TIMESTAMP DEFAULT NOW(),
-                        status VARCHAR(20) DEFAULT 'pending',
-                        note TEXT,
-                        photo_file_id TEXT,
-                        latitude DECIMAL(10, 8),
-                        longitude DECIMAL(11, 8),
-                        distance INTEGER,
-                        log_id INTEGER,
-                        admin_id INTEGER,
-                        processed_at TIMESTAMP,
-                        decision_note TEXT,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                ''')
-
                 # Гарантируем наличие критичных столбцов для обратной совместимости
                 await self.safe_migration()
 
@@ -299,26 +294,6 @@ class WorkTimeBot:
                         created_at TIMESTAMP DEFAULT NOW()
                     )
                 ''')
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS manual_presence_requests (
-                        id SERIAL PRIMARY KEY,
-                        employee_id INTEGER REFERENCES employees(id),
-                        object_id INTEGER REFERENCES objects(id),
-                        action VARCHAR(20),
-                        requested_at TIMESTAMP DEFAULT NOW(),
-                        status VARCHAR(20) DEFAULT 'pending',
-                        note TEXT,
-                        photo_file_id TEXT,
-                        latitude DECIMAL(10, 8),
-                        longitude DECIMAL(11, 8),
-                        distance INTEGER,
-                        log_id INTEGER,
-                        admin_id INTEGER,
-                        processed_at TIMESTAMP,
-                        decision_note TEXT,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                ''')
 
             logger.info("Миграция БД завершена успешно")
         except Exception as e:
@@ -389,21 +364,22 @@ class WorkTimeBot:
     def get_main_keyboard(self, is_admin: bool = False, show_remove_sick: bool = False) -> ReplyKeyboardMarkup:
         """Создает основное меню с кнопками"""
         builder = ReplyKeyboardBuilder()
-        
+
+        if is_admin:
+            builder.add(KeyboardButton(text="Статистика"))
+            builder.add(KeyboardButton(text="Админ панель"))
+            builder.adjust(1)
+            return builder.as_markup(resize_keyboard=True)
+
         # Основные кнопки для сотрудников
         builder.add(KeyboardButton(text="Пришел"))
         builder.add(KeyboardButton(text="Ушел"))
         builder.add(KeyboardButton(text="Болел"))
         if show_remove_sick:
             builder.add(KeyboardButton(text="Снять больничный"))
-        builder.add(KeyboardButton(text="Не получилось отметить — я на объекте"))
         builder.add(KeyboardButton(text="Выбрать объект"))
         builder.add(KeyboardButton(text="Отправить геолокацию", request_location=True))
 
-        if is_admin:
-            builder.add(KeyboardButton(text="Статистика"))
-            builder.add(KeyboardButton(text="Админ панель"))
-        
         builder.adjust(2)  # 2 кнопки в ряд
         return builder.as_markup(resize_keyboard=True)
     
@@ -421,7 +397,6 @@ class WorkTimeBot:
         self.dp.message.register(self.handle_leave, F.text == "Ушел")
         self.dp.message.register(self.handle_sick_btn, F.text == "Болел")
         self.dp.message.register(self.handle_sick_clear, F.text == "Снять больничный")
-        self.dp.message.register(self.handle_manual_presence, F.text == "Не получилось отметить — я на объекте")
         self.dp.message.register(self.handle_select_object_btn, F.text == "Выбрать объект")
         self.dp.message.register(self.handle_stats_btn, F.text == "Статистика")
         self.dp.message.register(self.handle_admin_btn, F.text == "Админ панель")
@@ -509,6 +484,17 @@ class WorkTimeBot:
 
         today = self.moscow_today()
         async with self.pool.acquire() as conn:
+            user = await conn.fetchrow(
+                'SELECT is_admin FROM employees WHERE telegram_id = $1',
+                user_id,
+            )
+            if user and user['is_admin']:
+                await message.answer(
+                    "Отметки прихода недоступны администраторам.",
+                    reply_markup=self.get_main_keyboard(is_admin=True),
+                )
+                return
+
             sick_today = await conn.fetchval(
                 '''
                 SELECT 1 FROM time_logs
@@ -550,6 +536,17 @@ class WorkTimeBot:
 
         today = self.moscow_today()
         async with self.pool.acquire() as conn:
+            user = await conn.fetchrow(
+                'SELECT is_admin FROM employees WHERE telegram_id = $1',
+                user_id,
+            )
+            if user and user['is_admin']:
+                await message.answer(
+                    "Отметки ухода недоступны администраторам.",
+                    reply_markup=self.get_main_keyboard(is_admin=True),
+                )
+                return
+
             sick_today = await conn.fetchval(
                 '''
                 SELECT 1 FROM time_logs
@@ -654,11 +651,20 @@ class WorkTimeBot:
     async def handle_select_object_btn(self, message: types.Message, state: FSMContext):
         """Обработка кнопки 'Выбрать объект'"""
         user_id = message.from_user.id
-        
+
         if not await self.check_access(user_id):
             await message.answer("Доступ запрещен.")
             return
-        
+
+        async with self.pool.acquire() as conn:
+            is_admin = await conn.fetchval('SELECT is_admin FROM employees WHERE telegram_id = $1', user_id)
+            if is_admin:
+                await message.answer(
+                    "Выбор объекта доступен только сотрудникам.",
+                    reply_markup=self.get_main_keyboard(is_admin=True),
+                )
+                return
+
         await self.show_objects(message, state, "select")
     
     async def handle_stats_btn(self, message: types.Message):
@@ -672,9 +678,17 @@ class WorkTimeBot:
         today = self.moscow_today()
 
         async with self.pool.acquire() as conn:
+            employees = await conn.fetch(
+                '''
+                SELECT id, full_name
+                FROM employees
+                WHERE is_active = TRUE AND is_approved = TRUE AND is_admin = FALSE
+                ORDER BY full_name
+                '''
+            )
             logs = await conn.fetch(
                 '''
-                SELECT e.full_name, tl.check_in, tl.check_out, tl.hours_worked, tl.date, tl.status,
+                SELECT tl.employee_id, tl.check_in, tl.status,
                        COALESCE(o.name, 'Не указан') AS object_name
                 FROM time_logs tl
                 JOIN employees e ON tl.employee_id = e.id
@@ -713,28 +727,69 @@ class WorkTimeBot:
                 today,
             )
 
-        text = "Статистика за сегодня:\n\n"
+        log_map: Dict[int, asyncpg.Record] = {}
+        for log in logs:
+            existing = log_map.get(log['employee_id'])
+            if not existing:
+                log_map[log['employee_id']] = log
+                continue
+            if log['check_in'] and (existing['check_in'] is None or log['check_in'] < existing['check_in']):
+                log_map[log['employee_id']] = log
 
-        if not logs:
-            text += "Нет отметок за сегодня."
-        else:
-            for log in logs:
-                if log['status'] == 'sick':
-                    text += (
-                        f"{log['full_name']}: Больничный, дата {log['date'].strftime('%d.%m.%Y')}, "
-                        f"участок {log['object_name']}\n"
+        arrived = []
+        sick = []
+        missing = []
+
+        for emp in employees:
+            entry = log_map.get(emp['id'])
+            if not entry:
+                missing.append(emp['full_name'])
+                continue
+            if entry['status'] == 'sick':
+                sick.append(emp['full_name'])
+                continue
+            if entry['check_in']:
+                arrived.append(
+                    (
+                        emp['full_name'],
+                        entry['check_in'],
+                        entry['object_name'],
                     )
-                    continue
-
-                check_in = log['check_in'].strftime('%H:%M') if log['check_in'] else '—'
-                check_out = log['check_out'].strftime('%H:%M') if log['check_out'] else '—'
-                hours = (log['hours_worked'] or 0)
-
-                text += (
-                    f"{log['full_name']}: приход {check_in}, уход {check_out}, "
-                    f"отработано {hours:.1f} ч., дата {log['date'].strftime('%d.%m.%Y')}, "
-                    f"участок {log['object_name']}\n"
                 )
+            else:
+                missing.append(emp['full_name'])
+
+        text_sections = ["Статистика по персоналу за сегодня:\n"]
+
+        def format_block(title: str, rows: list[str]):
+            if not rows:
+                return f"{title}: нет\n"
+            return f"{title}:\n" + "\n".join(rows) + "\n"
+
+        arrived_rows = [
+            f"{idx}. {name} — {check_in.strftime('%H:%M')} ({obj})"
+            for idx, (name, check_in, obj) in enumerate(arrived, start=1)
+        ]
+        missing_rows = [f"{idx}. {name}" for idx, name in enumerate(missing, start=1)]
+        sick_rows = [f"{idx}. {name}" for idx, name in enumerate(sick, start=1)]
+
+        text_sections.append(format_block("Пришли", arrived_rows))
+        text_sections.append(format_block("Не отметились", missing_rows))
+        text_sections.append(format_block("Болеют", sick_rows))
+
+        text += "\nНе отметили приход:\n"
+        if not missing_checkins:
+            text += "—\n"
+        else:
+            for row in missing_checkins:
+                text += f"• {row['full_name']}\n"
+
+        text += "\nНе отметили уход:\n"
+        if not missing_checkouts:
+            text += "—"
+        else:
+            for row in missing_checkouts:
+                text += f"• {row['full_name']}\n"
 
         text += "\nНе отметили приход:\n"
         if not missing_checkins:
@@ -780,7 +835,6 @@ class WorkTimeBot:
             ("Удалить объект", "admin_delete_object"),
             ("Статистика", "admin_stats"),
             ("Экспорт действий", "admin_export_logs"),
-            ("Запросы подтверждения", "admin_manual_requests"),
         ]
         
         for text, data in buttons:
@@ -852,12 +906,6 @@ class WorkTimeBot:
                     await self.show_stats(callback)
                 elif data == "admin_export_logs":
                     await self.send_action_log(callback)
-                elif data == "admin_manual_requests":
-                    await self.show_manual_requests(callback)
-                elif data.startswith("admin_manual_approve_"):
-                    await self.approve_manual_request(callback)
-                elif data.startswith("admin_manual_reject_"):
-                    await self.reject_manual_request(callback)
                 else:
                     await callback.answer("Неизвестная команда", show_alert=True)
                     return
@@ -1148,7 +1196,7 @@ class WorkTimeBot:
         user_id = data.get("user_id")
         reason = message.text
 
-        today = self.moscow_today()
+        today = today_moscow()
         async with self.pool.acquire() as conn:
             working_today = await conn.fetchval(
                 '''
@@ -1266,14 +1314,14 @@ class WorkTimeBot:
                     "\n\nОставьте поле пустым между символами | чтобы не менять значение."
                 )
 
-            await state.set_state(Form.waiting_for_employee_admin_data)
-            await state.update_data(employee_action=action, employee_id=employee_id)
-            await callback.message.answer(
-                "Введите данные сотрудника в формате:\n"
-                "ФИО | Должность | Telegram ID | Админ (0/1) | Активен (0/1) | Одобрен (0/1)\n"
-                "Поля admin/active/approved можно пропустить, по умолчанию: 0/1/1" + current_text,
-                reply_markup=types.ReplyKeyboardRemove(),
-            )
+        await state.set_state(Form.waiting_for_employee_admin_data)
+        await state.update_data(employee_action=action, employee_id=employee_id)
+        await callback.message.answer(
+            "Введите данные сотрудника в формате:\n"
+            "ФИО | Должность | Telegram ID | Админ (0/1) | Активен (0/1) | Одобрен (0/1)\n"
+            "Поля admin/active/approved можно пропустить, по умолчанию: 0/1/1" + current_text,
+            reply_markup=types.ReplyKeyboardRemove(),
+        )
 
     async def choose_employee_for_action(self, callback: types.CallbackQuery, action: str):
         async with self.pool.acquire() as conn:
@@ -1517,16 +1565,6 @@ class WorkTimeBot:
 
         if suspicious_reasons:
             reason_text = "; ".join(suspicious_reasons)
-            await state.update_data(
-                manual_context={
-                    "action": action,
-                    "object_id": target_object['id'],
-                    "log_id": data.get("log_id"),
-                    "lat": location.latitude,
-                    "lon": location.longitude,
-                    "distance": distance,
-                }
-            )
             await self.log_location_attempt(
                 user_id=message.from_user.id,
                 object_id=target_object['id'] if target_object else None,
@@ -1540,8 +1578,24 @@ class WorkTimeBot:
             )
             await message.answer(
                 "Геолокация выглядит недостоверной. Отправьте актуальную точку через кнопку "
-                "«Отправить геолокацию» и убедитесь, что GPS включен.\n"
-                "Если отметка не проходит, используйте кнопку «Не получилось отметить — я на объекте».",
+                "«Отправить геолокацию» и убедитесь, что GPS включен.",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="Отправить геолокацию", request_location=True)],
+                              [KeyboardButton(text="Отмена")]],
+                    resize_keyboard=True,
+                ),
+            )
+            await state.update_data(selected_object_id=target_object['id'])
+            await state.set_state(Form.waiting_for_location)
+            return
+
+        if (
+            distance is not None
+            and distance != float('inf')
+            and distance > Config.LOCATION_RADIUS
+        ):
+            await message.answer(
+                f"Вы находитесь дальше {Config.LOCATION_RADIUS} м от выбранного объекта. Подойдите ближе и отправьте геолокацию еще раз.",
                 reply_markup=ReplyKeyboardMarkup(
                     keyboard=[
                         [KeyboardButton(text="Отправить геолокацию", request_location=True)],
@@ -1615,132 +1669,6 @@ class WorkTimeBot:
             await self.process_checkout_with_location(data.get("log_id"), location, target_object, distance or 0)
             await state.clear()
 
-    async def handle_manual_presence(self, message: types.Message, state: FSMContext):
-        """Запуск ручного подтверждения присутствия"""
-        user_id = message.from_user.id
-        if not await self.check_access(user_id):
-            await message.answer("Доступ запрещен.")
-            return
-
-        state_data = await state.get_data()
-        manual_context = state_data.get("manual_context")
-        if not manual_context:
-            await message.answer(
-                "Начните с кнопки «Пришел» или «Ушел» и отправьте геолокацию, чтобы использовать этот способ.",
-                reply_markup=await self.build_main_keyboard_for_user(user_id),
-            )
-            return
-
-        await state.update_data(manual_note=None, manual_photo=None)
-        await message.answer(
-            "Опишите коротко, почему не удалось отметиться (например, слабый GPS, в помещении).",
-            reply_markup=types.ReplyKeyboardRemove(),
-        )
-        await state.set_state(Form.waiting_for_manual_note)
-
-    async def process_manual_note(self, message: types.Message, state: FSMContext):
-        """Сохранить текстовое пояснение и попросить фото"""
-        note = message.text.strip() if message.text else ""
-        await state.update_data(manual_note=note)
-        await message.answer("Прикрепите фото для подтверждения (бейдж, проходная, рабочее место).")
-        await state.set_state(Form.waiting_for_manual_photo)
-
-    async def process_manual_photo(self, message: types.Message, state: FSMContext):
-        """Получить фото и запустить обработку ручного подтверждения"""
-        if not message.photo:
-            await message.answer("Отправьте именно фото для подтверждения.")
-            return
-
-        photo_id = message.photo[-1].file_id
-        state_data = await state.get_data()
-        manual_context = state_data.get("manual_context")
-        if not manual_context:
-            await message.answer("Контекст подтверждения утрачен. Начните заново.")
-            await state.clear()
-            return
-
-        note = state_data.get("manual_note") or ""
-        await state.update_data(manual_photo=photo_id)
-        await state.clear()
-
-        await self.handle_manual_resolution(
-            user_id=message.from_user.id,
-            manual_context=manual_context,
-            note=note,
-            photo_id=photo_id,
-            requested_at=self.moscow_now_naive(),
-        )
-
-    async def handle_manual_resolution(
-        self,
-        user_id: int,
-        manual_context: Dict,
-        note: str,
-        photo_id: str,
-        requested_at: datetime,
-    ):
-        """Решение по ручному подтверждению: авто или отправка на проверку"""
-        distance = manual_context.get("distance") or float("inf")
-        object_id = manual_context.get("object_id")
-        action = manual_context.get("action")
-        log_id = manual_context.get("log_id")
-        lat = manual_context.get("lat")
-        lon = manual_context.get("lon")
-
-        auto_radius = Config.LOCATION_RADIUS * Config.LOCATION_SECONDARY_RADIUS_MULT
-        can_auto = distance != float("inf") and distance <= auto_radius and lat and lon
-
-        status_label = "manual_confirmed"
-        if can_auto:
-            log_id_result = await self._apply_manual_time(
-                user_id=user_id,
-                object_id=object_id,
-                action=action,
-                log_id=log_id,
-                note=note,
-                photo_id=photo_id,
-                requested_at=requested_at,
-                lat=lat,
-                lon=lon,
-                distance=distance,
-                status_label=status_label,
-            )
-            await self._save_manual_request(
-                user_id=user_id,
-                object_id=object_id,
-                action=action,
-                status="auto_approved",
-                note=note,
-                photo_id=photo_id,
-                lat=lat,
-                lon=lon,
-                distance=distance,
-                log_id=log_id_result,
-            )
-            await self.bot.send_message(
-                user_id,
-                "Отметка принята вручную (авто). Спасибо!",
-                reply_markup=await self.build_main_keyboard_for_user(user_id),
-            )
-        else:
-            req_id = await self._save_manual_request(
-                user_id=user_id,
-                object_id=object_id,
-                action=action,
-                status="pending",
-                note=note,
-                photo_id=photo_id,
-                lat=lat,
-                lon=lon,
-                distance=distance if distance != float("inf") else None,
-                log_id=log_id,
-            )
-            await self.bot.send_message(
-                user_id,
-                "Не удалось подтвердить автоматически. Запрос отправлен администратору.",
-                reply_markup=await self.build_main_keyboard_for_user(user_id),
-            )
-            await self.notify_admins_manual_request(req_id)
     async def log_location_attempt(
         self,
         user_id: int,
@@ -2391,7 +2319,7 @@ class WorkTimeBot:
                     chat_id=callback.from_user.id,
                     document=types.BufferedInputFile(
                         excel_file.getvalue(),
-                        filename=f"{filename}_{datetime.now().strftime('%Y_%m_%d')}.xlsx"
+                        filename=f"{filename}_{now_moscow().strftime('%Y_%m_%d')}.xlsx"
                     ),
                     caption=caption
                 )
@@ -2656,7 +2584,7 @@ class WorkTimeBot:
             chat_id=callback.from_user.id,
             document=types.BufferedInputFile(
                 excel_file.getvalue(),
-                filename=f"Общий_табель_{datetime.now().strftime('%Y_%m_%d')}.xlsx",
+                filename=f"Общий_табель_{now_moscow().strftime('%Y_%m_%d')}.xlsx",
             ),
             caption="Общий табель без разбивки по объектам",
         )
@@ -2711,7 +2639,7 @@ class WorkTimeBot:
         message = MIMEMultipart()
         message['From'] = Config.SMTP_USERNAME
         message['To'] = ', '.join(Config.EMAIL_RECIPIENTS)
-        message['Subject'] = subject or f"Табель {datetime.now().strftime('%B %Y')}"
+        message['Subject'] = subject or f"Табель {now_moscow().strftime('%B %Y')}"
 
         message.attach(MIMEText("Табель учета рабочего времени во вложении", 'plain'))
 
@@ -2720,7 +2648,7 @@ class WorkTimeBot:
         encoders.encode_base64(attachment)
         attachment.add_header(
             'Content-Disposition',
-            f'attachment; filename="Табель_{datetime.now().strftime("%Y_%m")}.xlsx"'
+            f'attachment; filename="Табель_{now_moscow().strftime("%Y_%m")}.xlsx"'
         )
         message.attach(attachment)
         return message
@@ -2903,35 +2831,6 @@ class WorkTimeBot:
                 ''',
                 today,
             )
-            sick_today = await conn.fetch(
-                '''
-                SELECT e.full_name
-                FROM time_logs tl
-                JOIN employees e ON tl.employee_id = e.id
-                WHERE tl.date = $1 AND tl.status = 'sick'
-                ORDER BY e.full_name
-                ''',
-                today,
-            )
-
-        total_employees = len(employees)
-        hours_by_emp = {row['employee_id']: float(row['hours'] or 0) for row in month_rows}
-        worked_ids = {
-            row['employee_id']
-            for row in month_rows
-            if (row['hours'] or 0) > 0 or (row['sick_days'] or 0) > 0 or (row['days_worked'] or 0) > 0
-        }
-        worked_count = len(worked_ids)
-        total_hours = sum(hours_by_emp.values())
-        total_work_days = sum(int(row['days_worked'] or 0) for row in month_rows)
-        total_sick_days = sum(int(row['sick_days'] or 0) for row in month_rows)
-
-        top_hours = sorted(month_rows, key=lambda r: float(r['hours'] or 0), reverse=True)[:3]
-        sick_leaders = [row for row in month_rows if (row['sick_days'] or 0) > 0]
-        sick_leaders.sort(key=lambda r: int(r['sick_days'] or 0), reverse=True)
-        non_working = [emp['full_name'] for emp in employees if emp['id'] not in worked_ids]
-
-        worked_pct = (worked_count / total_employees * 100) if total_employees else 0
         
         text = f"Статистика за {today.strftime('%B %Y')}:\n\n"
         text += f"Активных сотрудников: {total_employees}\n"
@@ -2964,10 +2863,6 @@ class WorkTimeBot:
         text += "\nСегодня:\n"
         text += f"Работали: {today_stats['worked_today'] or 0}\n"
         text += f"Часов: {today_stats['hours_today'] or 0:.1f}\n"
-        if sick_today:
-            text += "Больничный сегодня:\n"
-            for row in sick_today:
-                text += f"• {row['full_name']}\n"
         text += "Не отметили приход:\n"
         if not missing_checkins:
             text += "—\n"
